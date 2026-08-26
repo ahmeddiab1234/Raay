@@ -1,4 +1,4 @@
 [core]
     remote = storage
 ['remote "storage"']
-    url = s3://raay-ml-data/dvcstore
+    url = /home/diab/dvc-storage/raay
