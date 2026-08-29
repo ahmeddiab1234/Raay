@@ -115,5 +115,6 @@ data/**
 01_eda_arabic_sentiment_reviews.ipynb
 _build_eda*.py
 
+# remove from .gitignore , GitHub should acces it for README.md and reports
 reports/eda/Final_Data_first_data_only/figures/*.png
 reports/eda/Final_Data_first_data_only/summary_states.json
