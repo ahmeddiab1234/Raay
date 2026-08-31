@@ -1,0 +1,24 @@
+stages:
+  preprocess:
+    cmd: python -m raay.data.preprocess
+    deps:
+    - data/raw/Final_Data.csv
+    - src/raay/data/preprocess.py
+    params:
+    - preprocessing
+    outs:
+    - data/interim/normalized.csv
+    metrics:
+    - reports/preprocess_metrics.json:
+        cache: false
+  split:
+    cmd: python -m raay.data.split
+    deps:
+    - data/interim/normalized.csv
+    - src/raay/data/split.py
+    params:
+    - split
+    outs:
+    - data/processed/test.csv
+    - data/processed/train.csv
+    - data/processed/val.csv

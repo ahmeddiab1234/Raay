@@ -1,8 +1,7 @@
-commands_run.txt
+commands_run_p*.txt
 .venv/
 __pycache__/
 mlruns/
-data/*
 *.pt
 *.onnx
 *.engine
@@ -69,6 +68,8 @@ target/
 
 # DotEnv configuration
 .env
+# protetected docs
+docs/pr*.md
 
 # Database
 *.db
@@ -86,8 +87,6 @@ target/
 # Jupyter NB Checkpoints
 .ipynb_checkpoints/
 
-# exclude data from source control by default
-/data/
 
 # Mac OS-specific storage files
 .DS_Store
@@ -98,3 +97,25 @@ target/
 
 # Mypy cache
 .mypy_cache/
+
+# Ignore all data content by default
+data/**
+
+# But keep directory structure markers
+!data/raw/
+!data/interim/
+!data/processed/
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+
+# And keep DVC pointer files
+!data/**/*.dvc
+
+
+01_eda_arabic_sentiment_reviews.ipynb
+_build_eda*.py
+
+# remove from .gitignore , GitHub should acces it for README.md and reports
+reports/eda/Final_Data_first_data_only/figures/*.png
+reports/eda/Final_Data_first_data_only/summary_states.json

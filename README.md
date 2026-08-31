@@ -99,10 +99,27 @@ raay/
 
 ---
 
+## Datasets (Data Collection)
+
+The system currently relies on the following key datasets for training and validation:
+
+1. **[330K Arabic Sentiment Reviews (arabic_sentiment_reviews.csv)](https://www.kaggle.com/datasets/abdallaellaithy/330k-arabic-sentiment-reviews)**
+   - **Size:** 330,000 reviews (212.23 MB)
+   - **Description:** A large-scale binary sentiment dataset containing Arabic product reviews. It is labeled with `1` for positive and `0` for negative. This provides a massive foundation for training robust Arabic NLP models.
+
+2. **[Arabic Customer Reviews (Final_Data.csv)](https://www.kaggle.com/datasets/mohamedramadan2040/arabic-customer-reviews)**
+   - **Size:** ~36,000 reviews (4.44 MB)
+   - **Description:** Customer reviews in Arabic collected from various companies and products. Includes review text, sentiment ratings, and the associated company. This dataset is actively used in the current preprocessing and modeling version.
+
+*Note: The raw datasets are tracked via DVC and are not directly included in the Git repository.*
+
+---
+
 ## Installation & Usage
 
 ### Prerequisites
 
+- **Linux or Windows Subsystem for Linux (WSL)**
 - **Python 3.12+**
 - **[uv](https://docs.astral.sh/uv/)** package manager
 - **Docker** (for MLflow server)
@@ -182,6 +199,17 @@ uv run ruff format --check . # Format check
 uv run mypy src              # Type check
 uv run pytest                # Tests
 ```
+
+### 9. Run the Data Pipeline (Preprocessing & Splitting)
+
+We use a DVC pipeline (`dvc.yaml`) to run data preprocessing and splitting in a reproducible manner. This processes the raw datasets (`data/raw/`) into a normalized intermediate form, and splits them into `train.csv`, `val.csv`, and `test.csv` sets based on `params.yaml`.
+
+```bash
+# Reproduce the preprocessing and splitting steps
+uv run dvc repro
+```
+
+This pipeline automatically tracks the steps using **MLflow** (logging metrics like min/max string length, exact/fuzzy duplicates removed, and final split row counts) and outputs reports to `reports/preprocess_metrics.json`.
 
 ---
 

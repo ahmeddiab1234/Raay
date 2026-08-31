@@ -21,7 +21,9 @@ repos:
     rev: v1.10.1
     hooks:
       - id: mypy
-        additional_dependencies: ["pydantic>=2.7.0"]
+        additional_dependencies:
+          - "pydantic>=2.7.0"
+          - types-PyYAML>=6.0.12.20260815
         args: ["--ignore-missing-imports"]
         exclude: ^tests/
 

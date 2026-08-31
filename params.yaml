@@ -1,0 +1,9 @@
+preprocessing:
+  min_char_length: 10
+  elongation_max_repeat: 2
+  dedup_similarity_threshold: 0.9
+
+split:
+  test_size: 0.2
+  val_size: 0.1
+  random_state: 42
