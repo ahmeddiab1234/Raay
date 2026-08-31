@@ -1,5 +1,20 @@
 <div align="center">
 
+# Raay راي
+
+**Arabic E-Commerce Product Review Sentiment Analysis**
+
+An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / Negative / Neutral) at scale — supporting Modern Standard Arabic and regional dialects (Egyptian, Gulf, Levantine).
+
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![uv](https://img.shields.io/badge/package%20manager-uv-blueviolet)](https://docs.astral.sh/uv/)
+[![Ruff](https://img.shields.io/badge/linter-ruff-orange)](https://docs.astral.sh/ruff/)
+[![MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2)](https://mlflow.org/)
+[![DVC](https://img.shields.io/badge/data%20versioning-DVC-945DD6)](https://dvc.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+</div>
+
 ---
 
 ## Overview
@@ -12,21 +27,20 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 
 ## Features
 
-
-| Category                | Details                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------- |
-| **3-Class Sentiment**   | Positive · Negative · Neutral classification with confidence scores               |
-| **Arabic NLP**          | MSA + dialect support (Egyptian, Gulf, Levantine, Arabizi/franco-arabe)             |
-| **Transformer-based**   | AraBERT backbone with HuggingFace Transformers & Accelerate                         |
+| Category | Details |
+|---|---|
+| **3-Class Sentiment** | Positive · Negative · Neutral classification with confidence scores |
+| **Arabic NLP** | MSA + dialect support (Egyptian, Gulf, Levantine, Arabizi/franco-arabe) |
+| **Transformer-based** | AraBERT backbone with HuggingFace Transformers & Accelerate |
 | **Experiment Tracking** | MLflow server (Dockerized) for metric logging, model registry, and artifact storage |
-| **Data Versioning**     | DVC with configurable remote storage (local / S3)                                   |
-| **Code Quality**        | Ruff linter & formatter, mypy static type checking, pre-commit hooks                |
-| **Testing**             | pytest + pytest-cov test suite                                                      |
-| **Configuration**       | Hydra-based hierarchical config management                                          |
-| **Serving**             | BentoML for model packaging and REST API serving                                    |
-| **Typed Schemas**       | Pydantic models for data validation across the pipeline                             |
-| **Structured Logging**  | Loguru for structured, leveled logging                                              |
-| **CLI**                 | Typer-based command-line interface                                                  |
+| **Data Versioning** | DVC with configurable remote storage (local / S3) |
+| **Code Quality** | Ruff linter & formatter, mypy static type checking, pre-commit hooks |
+| **Testing** | pytest + pytest-cov test suite |
+| **Configuration** | Hydra-based hierarchical config management |
+| **Serving** | BentoML for model packaging and REST API serving |
+| **Typed Schemas** | Pydantic models for data validation across the pipeline |
+| **Structured Logging** | Loguru for structured, leveled logging |
+| **CLI** | Typer-based command-line interface |
 
 ---
 
@@ -66,23 +80,22 @@ raay/
 
 ## Tech Stack
 
-
-| Layer                | Tool                                          |
-| ---------------------- | ----------------------------------------------- |
-| Language             | Python 3.12+                                  |
-| Package Manager      | [uv](https://docs.astral.sh/uv/)              |
-| Deep Learning        | PyTorch, HuggingFace Transformers, Accelerate |
-| Experiment Tracking  | MLflow (Dockerized server)                    |
-| Data Versioning      | DVC (S3 / local remote)                       |
-| Model Serving        | BentoML                                       |
-| Config Management    | Hydra                                         |
-| Data Validation      | Pydantic                                      |
-| Linting & Formatting | Ruff                                          |
-| Type Checking        | mypy                                          |
-| Testing              | pytest, pytest-cov                            |
-| Pre-commit           | pre-commit (ruff, mypy, DVC hooks)            |
-| Logging              | Loguru                                        |
-| CLI                  | Typer                                         |
+| Layer | Tool |
+|---|---|
+| Language | Python 3.12+ |
+| Package Manager | [uv](https://docs.astral.sh/uv/) |
+| Deep Learning | PyTorch, HuggingFace Transformers, Accelerate |
+| Experiment Tracking | MLflow (Dockerized server) |
+| Data Versioning | DVC (S3 / local remote) |
+| Model Serving | BentoML |
+| Config Management | Hydra |
+| Data Validation | Pydantic |
+| Linting & Formatting | Ruff |
+| Type Checking | mypy |
+| Testing | pytest, pytest-cov |
+| Pre-commit | pre-commit (ruff, mypy, DVC hooks) |
+| Logging | Loguru |
+| CLI | Typer |
 
 ---
 
@@ -202,9 +215,8 @@ This pipeline automatically tracks the steps using **MLflow** (logging metrics l
 
 ## Environment Variables
 
-
-| Variable              | Description       | Example                 |
-| ----------------------- | ------------------- | ------------------------- |
+| Variable | Description | Example |
+|---|---|---|
 | `MLFLOW_TRACKING_URI` | MLflow server URL | `http://localhost:5000` |
 
 ---
@@ -216,3 +228,7 @@ This project is licensed under the MIT License.
 ---
 
 <div align="center">
+
+**Raay راي** — Giving every Arabic review a voice.
+
+</div>
