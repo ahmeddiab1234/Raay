@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -25,5 +25,5 @@ class SplitConfig:
 class PipelineConfig:
     """Main configuration for the data pipeline."""
 
-    preprocessing: PreprocessingConfig = PreprocessingConfig()
-    split: SplitConfig = SplitConfig()
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)

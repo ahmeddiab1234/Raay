@@ -2,6 +2,6 @@
 Configuration module for Raay project.
 """
 
-from raay.config.data_config import PreprocessingConfig, SplitConfig, PipelineConfig
+from raay.config.data_config import PipelineConfig, PreprocessingConfig, SplitConfig
 
-__all__ = ["PreprocessingConfig", "SplitConfig", "PipelineConfig"]
+__all__ = ["PipelineConfig", "PreprocessingConfig", "SplitConfig"]
