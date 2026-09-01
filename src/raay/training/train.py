@@ -106,6 +106,7 @@ def tokenize_and_encode(
 def compute_metrics(eval_pred: EvalPrediction, cfg: DictConfig) -> dict[str, float]:
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
+
     id_to_label = _inverse_label_map(cfg)
     target_names = [id_to_label[i] for i in range(cfg.num_labels)]
 
@@ -114,11 +115,19 @@ def compute_metrics(eval_pred: EvalPrediction, cfg: DictConfig) -> dict[str, flo
         "f1_macro": float(f1_score(labels, preds, average="macro")),
         "f1_weighted": float(f1_score(labels, preds, average="weighted")),
     }
-    per_class = f1_score(
-        labels, preds, average=None, labels=list(range(cfg.num_labels))
+
+    per_class: np.ndarray = np.asarray(
+        f1_score(
+            labels,
+            preds,
+            average=None,
+            labels=list(range(cfg.num_labels)),
+        )
     )
+
     for name, value in zip(target_names, per_class):
         metrics[f"f1_{name}"] = float(value)
+
     return metrics
 
 
@@ -208,7 +217,11 @@ def main(cfg: DictConfig) -> None:
     # Dialect-tag the test set so the evaluation harness can break down by
     # dialect without re-reading/relabelling later.
     test_df = add_dialect_column(test_df, text_col="text")
-    test_df.to_csv(cfg.test_file, index=False)
+    # Save to a writable location: on Kaggle the input dir is read-only, so
+    # always write next to the model output_dir (inside the working copy).
+    dialect_test_path = Path(cfg.output_dir) / "test_dialect.csv"
+    dialect_test_path.parent.mkdir(parents=True, exist_ok=True)
+    test_df.to_csv(dialect_test_path, index=False)
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
     logger.info(f"Tokenizer version: {getattr(tokenizer, 'vocab_size', 'N/A')}")
