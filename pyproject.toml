@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.14.0",
+    "arabert>=1.0.1",
     "bentoml>=1.4.39",
     "datasets>=5.0.1",
     "dvc[s3]>=3.67.1",
@@ -48,3 +49,13 @@ dev = [
     "types-pyyaml>=6.0.12.20260815",
     "wordcloud>=1.9.6",
 ]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+# mlflow has no type stubs and exposes symbols dynamically (submodule
+# re-exports), which older mypy (pre-commit mirror) cannot statically resolve.
+[[tool.mypy.overrides]]
+module = ["mlflow", "mlflow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"

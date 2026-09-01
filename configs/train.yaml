@@ -1,0 +1,61 @@
+# Baseline fine-tuning configuration (Hydra).
+# Override at the CLI, e.g.:
+#   uv run python -m raay.training.train learning_rate=3e-5 batch_size=32 seed=7
+#
+# NOTE: hydra.job.chdir is disabled so this stage keeps CWD at the repo root.
+# Stage scripts (like preprocess/split) resolve paths relative to the repo root
+# and DVC launches them from there, so a Hydra-chdir into an output dir would
+# break every relative path.
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ./outputs/train/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+model_name: aubmindlab/bert-base-arabertv02
+
+# Fine-tuning hyper-parameters (this is the sweep axis).
+learning_rate: 2e-5
+batch_size: 16
+max_length: 128
+epochs: 3
+seed: 42
+# 0 (default) => train for `epochs`; set > 0 to cap training to a fixed
+# number of steps (used to bound short CPU smoke tests).
+max_steps: 0
+
+# Guard rail: fail loudly (raise) instead of training when no CUDA GPU is
+# available. Set require_gpu=false only for deliberate CPU smoke tests.
+require_gpu: true
+
+# Task / modelling
+num_labels: 3
+labels: [positive, negative, neutral]
+
+# Optimizer / scheduler
+weight_decay: 0.01
+warmup_steps: 0
+gradient_accumulation_steps: 1
+
+# Evaluation / checkpointing
+eval_steps: 500
+save_steps: 500
+logging_steps: 100
+save_total_limit: 2
+load_best_model_at_end: true
+metric_for_best_model: eval_f1_macro
+
+# Data
+train_file: data/processed/train.csv
+val_file: data/processed/val.csv
+test_file: data/processed/test.csv
+
+# MLflow
+experiment_name: raay_training
+
+# Checkpoint / artifact output (relative to repo root).
+output_dir: models/baseline
+
+# Placed by the Kaggle driver script; not used by the local CLI entrypoint.
+run_tag: local

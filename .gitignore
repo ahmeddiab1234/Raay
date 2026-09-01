@@ -43,6 +43,8 @@ var/
 pip-log.txt
 pip-delete-this-directory.txt
 
+AGENTS.md
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -97,6 +99,11 @@ docs/pr*.md
 
 # Mypy cache
 .mypy_cache/
+
+# Training artifacts (regenerated on Kaggle/GPU or via DVC; never commit)
+models/baseline/
+outputs/
+reports/mlflow_comparison.png
 
 # Ignore all data content by default
 data/**

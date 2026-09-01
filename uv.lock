@@ -298,6 +298,20 @@ wheels = [
 ]
 
 [[package]]
+name = "arabert"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "emoji" },
+    { name = "farasapy" },
+    { name = "pyarabic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/48/35/de62ef4fa8b254b254235258f2830b3a68abfe921ae5e939758e8f9ea8df/arabert-1.0.1.tar.gz", hash = "sha256:6d10711e21b4460d8b7a7d75670691c3a95f3b7fe7e10da111fea7bba7e76f6e", size = 148613, upload-time = "2022-07-28T12:44:36.256Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/e6/2e8c696471691ebc4c1f18f4afd9c6b52e508e2f9c0453813b498ac14e02/arabert-1.0.1-py3-none-any.whl", hash = "sha256:4d8cb74cba070821cd727dd0e07b0de07728a8ffe5810b3be89da4bae3618e3c", size = 179268, upload-time = "2022-07-28T12:44:34.982Z" },
+]
+
+[[package]]
 name = "argon2-cffi"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1634,6 +1648,12 @@ wheels = [
 ]
 
 [[package]]
+name = "emoji"
+version = "1.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/eb/e09f7986f83c4bd711f0c81482f12a48742b9a7473a7ac0a97b8bcc9dd4b/emoji-1.4.2.tar.gz", hash = "sha256:21257f311e24468031e85685867c00b87249dc7612b82dc763a771ba5fb00c01", size = 184985, upload-time = "2021-07-30T06:05:34.427Z" }
+
+[[package]]
 name = "entrypoints"
 version = "0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1649,6 +1669,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cc/28/c14e053b6762b1044f34a13aab6859bbf40456d37d23aa286ac24cfd9a5d/executing-2.2.1.tar.gz", hash = "sha256:3632cc370565f6648cc328b32435bd120a1e4ebb20c77e3fdde9a13cd1e533c4", size = 1129488, upload-time = "2025-09-01T09:48:10.866Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/ea/53f2148663b321f21b5a606bd5f191517cf40b7072c0497d3c92c4a13b1e/executing-2.2.1-py2.py3-none-any.whl", hash = "sha256:760643d3452b4d777d295bb167ccc74c64a81df23fb5e08eff250c425a4b2017", size = 28317, upload-time = "2025-09-01T09:48:08.5Z" },
+]
+
+[[package]]
+name = "farasapy"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/04/e29202e40ba7b81b13414c52b316180bb6628c07b1f450ea9554089b6762/farasapy-0.1.1.tar.gz", hash = "sha256:78dcbeba5b670e7d36cd70d3b42c6cfcb8fdee232b1e20d6f35f592b05fe54fc", size = 35035, upload-time = "2025-09-10T14:47:54.669Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/bf/b2011720573d55b2bd702e667ada9e6affb6a4a735d150742d7313e44d29/farasapy-0.1.1-py3-none-any.whl", hash = "sha256:a1f56967c9fcc62db57b815f024b0646b584fd858fa933cef51e11bc7b4c2f5c", size = 14839, upload-time = "2025-09-10T14:47:53.629Z" },
 ]
 
 [[package]]
@@ -4208,6 +4241,17 @@ wheels = [
 ]
 
 [[package]]
+name = "pyarabic"
+version = "0.6.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/64/0ea5be39e6a6515804cae8c280226d771f42750a08182f9d2e5f3b822694/PyArabic-0.6.15-py3-none-any.whl", hash = "sha256:b9a530277876008f5fbe53249c6953b4513dbbf2ea8f4339694e87c8a75d7edf", size = 126368, upload-time = "2022-06-18T10:47:16.66Z" },
+]
+
+[[package]]
 name = "pyarrow"
 version = "25.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4702,6 +4746,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
+    { name = "arabert" },
     { name = "bentoml" },
     { name = "datasets" },
     { name = "dvc", extra = ["s3"] },
@@ -4738,6 +4783,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.14.0" },
+    { name = "arabert", specifier = ">=1.0.1" },
     { name = "bentoml", specifier = ">=1.4.39" },
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "dvc", extras = ["s3"], specifier = ">=3.67.1" },

@@ -33,10 +33,14 @@ stages:
       hash: md5
       md5: 250981254fd2c269dece5b288a0ade05
       size: 4361364
-    - path: src/raay/data/split.py
+    - path: src/raay/data/dialect.py
       hash: md5
-      md5: 4f74ccf983bba487ab90a8f1d108b8cd
-      size: 2967
+      md5: bb2478a2714db413e008bd4fd52462de
+      size: 5957
+    - path: src/raay/enums/constants.py
+      hash: md5
+      md5: 89b881eade4fe2e89ab2331469c68a28
+      size: 562
     params:
       params.yaml:
         split:
@@ -46,13 +50,13 @@ stages:
     outs:
     - path: data/processed/test.csv
       hash: md5
-      md5: 6eb1d005c0bc2a896868594a0d42e19c
-      size: 883433
+      md5: 5d18bebe1ecdbbcccab6dca9e311630f
+      size: 971806
     - path: data/processed/train.csv
       hash: md5
-      md5: 45cd7ecbe0a8176762e91a120a6c49db
-      size: 3043648
+      md5: c7275698ec117b0961df59b8a42d9cbb
+      size: 3352436
     - path: data/processed/val.csv
       hash: md5
-      md5: 5004266e1c888dd9856c7e59865591f4
-      size: 434346
+      md5: 5fe53c87e7b05fbf3862053c4e94845f
+      size: 478580

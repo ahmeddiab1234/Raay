@@ -16,3 +16,14 @@ class SplitNames(str, Enum):
     TRAIN = "train"
     VALIDATION = "validation"
     TEST = "test"
+
+
+class Dialects(str, Enum):
+    """Coarse Arabic dialect buckets used by the heuristic detector."""
+
+    MSA = "msa"
+    EGYPTIAN = "egyptian"
+    GULF = "gulf"
+    LEVANTINE = "levantine"
+    MAGHREBI = "maghrebi"
+    ARABIZI = "arabizi"

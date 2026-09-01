@@ -15,7 +15,8 @@ stages:
     cmd: python -m raay.data.split
     deps:
     - data/interim/normalized.csv
-    - src/raay/data/split.py
+    - src/raay/data/dialect.py
+    - src/raay/enums/constants.py
     params:
     - split
     outs:

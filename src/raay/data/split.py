@@ -6,6 +6,7 @@ from loguru import logger
 from sklearn.model_selection import train_test_split
 
 import mlflow
+from raay.data.dialect import add_dialect_column
 
 
 def load_config(config_path: str = "params.yaml") -> dict:
@@ -57,6 +58,9 @@ def main():
     logger.info(f"Loading normalized data from {input_path}")
     df = pd.read_csv(input_path)
 
+    logger.info("Tagging heuristic dialect column...")
+    df = add_dialect_column(df, text_col="text")
+
     mlflow.set_experiment("raay_preprocessing")
     with mlflow.start_run(run_name="data_splitting"):
         mlflow.log_params(split_config)
@@ -71,6 +75,11 @@ def main():
         logger.info(f"Train size: {len(train_df)}")
         logger.info(f"Val size: {len(val_df)}")
         logger.info(f"Test size: {len(test_df)}")
+
+        dialect_counts = df["dialect"].value_counts().to_dict()
+        mlflow.log_metrics(
+            {f"dialect_{k}": float(v) for k, v in sorted(dialect_counts.items())}
+        )
 
         train_path = output_dir / "train.csv"
         val_path = output_dir / "val.csv"
