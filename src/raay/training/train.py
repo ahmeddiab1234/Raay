@@ -144,6 +144,7 @@ def build_training_args(cfg: DictConfig) -> TrainingArguments:
     # step budget of zero (not epoch-based), which silently truncates training
     # to ~1 step. Map our "use epochs" default (max_steps == 0) to -1.
     max_steps = cfg.max_steps if int(cfg.max_steps) > 0 else -1
+    save_model = bool(cfg.save_model)
     return TrainingArguments(
         output_dir=_resolve_output_dir(cfg),
         learning_rate=cfg.learning_rate,
@@ -156,12 +157,12 @@ def build_training_args(cfg: DictConfig) -> TrainingArguments:
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         eval_strategy="steps",
         eval_steps=cfg.eval_steps,
-        save_strategy="steps",
+        save_strategy="steps" if save_model else "no",
         save_steps=cfg.save_steps,
         save_total_limit=cfg.save_total_limit,
         logging_strategy="steps",
         logging_steps=cfg.logging_steps,
-        load_best_model_at_end=cfg.load_best_model_at_end,
+        load_best_model_at_end=bool(cfg.load_best_model_at_end) and save_model,
         metric_for_best_model=cfg.metric_for_best_model,
         greater_is_better=True,
         seed=cfg.seed,
@@ -199,6 +200,8 @@ def main(cfg: DictConfig) -> None:
     OmegaConf.set_struct(cfg, False)
     cfg.output_dir = _resolve_output_dir(cfg)
     OmegaConf.set_struct(cfg, True)
+
+    save_model = bool(cfg.save_model)
 
     set_seed(cfg.seed)
     logger.info(OmegaConf.to_yaml(cfg))
@@ -259,7 +262,6 @@ def main(cfg: DictConfig) -> None:
 
         train_result = trainer.train()
         out_dir = cfg.output_dir
-        trainer.save_model(str(Path(out_dir) / "final"))
 
         metrics = train_result.metrics
         eval_metrics = trainer.evaluate()
@@ -277,8 +279,14 @@ def main(cfg: DictConfig) -> None:
         mlflow.log_param("model_name", cfg.model_name)
         mlflow.log_param("run_tag", str(cfg.run_tag))
 
-        # Log the saved model directory as artifacts.
-        mlflow.log_artifacts(cfg.output_dir, artifact_path="model")
+        # Persist weights only for the final (winner) run: during the sweep
+        # save_model=false so candidates log metrics/params exclusively and skip
+        # the (large) checkpoints + mlruns artifacts. Log just the final/
+        # subfolder, not Trainer's rotated checkpoint-* dirs.
+        if save_model:
+            final_dir = Path(out_dir) / "final"
+            trainer.save_model(str(final_dir))
+            mlflow.log_artifacts(str(final_dir), artifact_path="model")
 
 
 def _loggable_params(cfg: DictConfig) -> dict[str, Any]:

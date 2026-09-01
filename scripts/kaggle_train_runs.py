@@ -8,9 +8,13 @@ standalone against a local snapshot. It:
        ``DATA_ROOT=/kaggle/input/<dataset>/data/processed``).
     2. Launches >= ``N`` independent train runs varying learning_rate /
        batch_size (each a fresh subprocess so Hydra recomposes cleanly).
+       Sweep candidates run with ``save_model=false`` so they only log
+       metrics/params (no checkpoints, no model artifacts) — keeps the Kaggle
+       working disk from filling up.
     3. Artifacts/metrics land in the session-local MLflow file store
        (``file:<MLFLOW_TRACKING_URI>``), one experiment ``raay_training``.
-    4. Selects the best run by ``eval_f1_macro`` and registers it as the
+    4. Selects the best run by ``eval_f1_macro``, retrains that exact config
+       with ``save_model=true``, and registers its ``final/`` artifacts as the
        ``ArabicSentiment`` model in stage ``Production``.
 
 After the run, copy the session ``mlruns/`` into the local repo and run
@@ -78,29 +82,72 @@ def _data_overrides() -> list[str]:
     ]
 
 
+def _train_command(
+    repo_root: Path, lr: float, bs: int, *, save_model: bool, run_tag: str
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "raay.training.train",
+        f"learning_rate={lr}",
+        f"batch_size={bs}",
+        f"save_model={'true' if save_model else 'false'}",
+        f"run_tag={run_tag}",
+        "hydra.run.dir=./outputs/train",
+        *_data_overrides(),
+    ]
+
+
 def run_sweep(n: int) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     combos = SWEEP[:n]
     logger.info(f"Will run {len(combos)} training runs")
-    data_overrides = _data_overrides()
-    logger.info(f"Data overrides: {data_overrides or 'repo-default data/processed'}")
+    logger.info(f"Data overrides: {_data_overrides() or 'repo-default data/processed'}")
 
     for lr, bs in combos:
-        cmd = [
-            sys.executable,
-            "-m",
-            "raay.training.train",
-            f"learning_rate={lr}",
-            f"batch_size={bs}",
-            "hydra.run.dir=./outputs/train",
-            *data_overrides,
-        ]
+        cmd = _train_command(repo_root, lr, bs, save_model=False, run_tag="sweep")
         logger.info(f"Launching: {cmd}")
         result = subprocess.run(cmd, cwd=repo_root, check=False)
         if result.returncode != 0:
             logger.error(f"Run failed (lr={lr}, bs={bs}) rc={result.returncode}")
         else:
             logger.info(f"Run finished (lr={lr}, bs={bs})")
+
+
+def find_best(experiment_name: str) -> mlflow.entities.Run:
+    mlflow.set_tracking_uri(_tracking_uri())
+    client = mlflow.tracking.MlflowClient()
+    exp = client.get_experiment_by_name(experiment_name)
+    if exp is None:
+        raise RuntimeError(
+            f"Experiment {experiment_name!r} not found; cannot select best."
+        )
+
+    runs = client.search_runs(
+        experiment_ids=[exp.experiment_id],
+        filter_string="attributes.status = 'FINISHED'",
+        order_by=["metrics.eval_f1_macro DESC"],
+    )
+    if not runs:
+        raise RuntimeError("No finished runs with eval_f1_macro to select best.")
+    return runs[0]
+
+
+def retrain_best(best: mlflow.entities.Run, repo_root: Path) -> None:
+    lr = best.data.params.get("learning_rate")
+    bs = best.data.params.get("batch_size")
+    if lr is None or bs is None:
+        raise RuntimeError(
+            f"Best run {best.info.run_id} missing lr/bs params; cannot retrain."
+        )
+    lr, bs = float(lr), int(bs)
+    logger.info(f"Retraining best config (lr={lr}, bs={bs}) with save_model=true")
+    cmd = _train_command(repo_root, lr, bs, save_model=True, run_tag="final")
+    result = subprocess.run(cmd, cwd=repo_root, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Retrain of best config failed (lr={lr}, bs={bs}) rc={result.returncode}"
+        )
 
 
 def register_best(experiment_name: str, model_name: str, stage: str) -> str:
@@ -112,18 +159,20 @@ def register_best(experiment_name: str, model_name: str, stage: str) -> str:
             f"Experiment {experiment_name!r} not found; cannot register."
         )
 
+    # Register only the retrained `final` run (save_model=true); sweep
+    # candidates carry no model artifacts.
     runs = client.search_runs(
         experiment_ids=[exp.experiment_id],
-        filter_string="attributes.status = 'FINISHED'",
+        filter_string="attributes.status = 'FINISHED' and params.run_tag = 'final'",
         order_by=["metrics.eval_f1_macro DESC"],
     )
     if not runs:
-        raise RuntimeError("No finished runs with eval_f1_macro to register.")
+        raise RuntimeError("No 'final' run (save_model=true) to register.")
 
     best = runs[0]
     best_f1 = best.data.metrics.get("eval_f1_macro", best.data.metrics.get("f1_macro"))
     logger.info(
-        f"Best run {best.info.run_id} (eval_f1_macro={best_f1}) "
+        f"Registering run {best.info.run_id} (eval_f1_macro={best_f1}) "
         f"lr={best.data.params.get('learning_rate')} "
         f"bs={best.data.params.get('batch_size')}"
     )
@@ -147,12 +196,16 @@ def main() -> None:
     parser.add_argument("--model-name", default="ArabicSentiment")
     parser.add_argument("--stage", default="Production")
     parser.add_argument(
-        "--no-train", action="store_true", help="Skip training, only register"
+        "--no-train", action="store_true", help="Skip sweep+retrain, only register"
     )
     args = parser.parse_args()
 
+    repo_root = Path(__file__).resolve().parent.parent
+
     if not args.no_train:
         run_sweep(args.n)
+        best = find_best(args.experiment)
+        retrain_best(best, repo_root)
 
     register_best(args.experiment, args.model_name, args.stage)
 

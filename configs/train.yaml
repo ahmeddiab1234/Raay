@@ -57,5 +57,11 @@ experiment_name: raay_training
 # Checkpoint / artifact output (relative to repo root).
 output_dir: models/baseline
 
+# Persist weights + log model artifacts. During a hyperparameter sweep we call
+# with save_model=false so candidates only log metrics/params to MLflow (no
+# checkpoints, no mlruns artifacts); the sweep driver retrains the winning
+# config with save_model=true afterwards.
+save_model: true
+
 # Placed by the Kaggle driver script; not used by the local CLI entrypoint.
 run_tag: local
