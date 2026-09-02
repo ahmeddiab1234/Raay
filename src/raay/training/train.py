@@ -56,6 +56,25 @@ except ImportError:  # pragma: no cover - import path guard
     ArabertPreprocessor = None  # type: ignore[assignment]
 
 
+def _pinned_pip_requirements() -> list[str]:
+    """Pin the framework deps MLflow would infer, skipping any that are missing.
+
+    ``mlflow.transformers.get_default_pip_requirements`` hardcodes ``torchvision``
+    whenever torch is present and then imports it to read its version, which crashes
+    on Kaggle (no torchvision installed). ``importlib.metadata`` reads versions
+    without importing, so missing packages are simply skipped.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    pinned: list[str] = []
+    for package in ("mlflow", "transformers", "torch", "torchvision", "accelerate"):
+        try:
+            pinned.append(f"{package}=={version(package)}")
+        except PackageNotFoundError:
+            continue
+    return pinned
+
+
 def _label_map(cfg: DictConfig) -> dict[str, int]:
     return {label: i for i, label in enumerate(cfg.labels)}
 
@@ -296,6 +315,7 @@ def main(cfg: DictConfig) -> None:
                 },
                 task="text-classification",
                 artifact_path="model",
+                pip_requirements=_pinned_pip_requirements(),
             )
 
 
