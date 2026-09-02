@@ -88,6 +88,16 @@ def _per_class(
     precision, recall, f1, support = precision_recall_fscore_support(
         y_true, y_pred, labels=labels, zero_division=0
     )
+    precision, recall, f1 = (
+        np.atleast_1d(precision),
+        np.atleast_1d(recall),
+        np.atleast_1d(f1),
+    )
+    support = (
+        np.atleast_1d(support)
+        if support is not None
+        else np.zeros_like(precision, dtype=int)
+    )
     result = {}
     for i, name in enumerate(names):
         result[name] = {

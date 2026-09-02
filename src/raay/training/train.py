@@ -286,7 +286,17 @@ def main(cfg: DictConfig) -> None:
         if save_model:
             final_dir = Path(out_dir) / "final"
             trainer.save_model(str(final_dir))
-            mlflow.log_artifacts(str(final_dir), artifact_path="model")
+            # Log a proper MLflow Model (MLmodel + weights) so it can be
+            # registered from runs:/<id>/model; log_artifacts wouldn't create
+            # an MLmodel file and register_model would fail.
+            mlflow.transformers.log_model(
+                transformers_model={
+                    "model": trainer.model,
+                    "tokenizer": tokenizer,
+                },
+                task="text-classification",
+                artifact_path="model",
+            )
 
 
 def _loggable_params(cfg: DictConfig) -> dict[str, Any]:
