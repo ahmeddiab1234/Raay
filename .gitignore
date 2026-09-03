@@ -75,6 +75,8 @@ docs/pr*.md
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.rdb
 
 # Pycharm

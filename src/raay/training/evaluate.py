@@ -34,6 +34,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import torch
 from loguru import logger
 from sklearn.metrics import (
     accuracy_score,
@@ -70,16 +71,22 @@ def load_model(model_dir: str):
 def predict(
     model: Any, tokenizer: Any, texts: list[str], model_name: str, max_length: int
 ) -> np.ndarray:
-    probs = model(
-        **tokenizer(
-            [_preprocess(t, model_name) for t in texts],
-            truncation=True,
-            padding=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-    ).logits
-    return np.argmax(probs.detach().numpy(), axis=-1)
+    model.eval()
+    probs_list: list[np.ndarray] = []
+    batch_size = 32
+    with torch.no_grad():
+        for i in range(0, len(texts), batch_size):
+            batch = [_preprocess(t, model_name) for t in texts[i : i + batch_size]]
+            batch_enc = tokenizer(
+                batch,
+                truncation=True,
+                padding=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+            logits = model(**batch_enc).logits
+            probs_list.append(logits.detach().numpy())
+    return np.argmax(np.concatenate(probs_list, axis=0), axis=-1)
 
 
 def _per_class(
