@@ -32,7 +32,7 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **3-Class Sentiment** | Positive · Negative · Neutral classification with confidence scores |
 | **Arabic NLP** | MSA + dialect support (Egyptian, Gulf, Levantine, Arabizi/franco-arabe) |
 | **Transformer-based** | AraBERT backbone with HuggingFace Transformers & Accelerate |
-| **Experiment Tracking** | MLflow server (Dockerized) for metric logging, model registry, and artifact storage |
+| **Experiment Tracking** | MLflow for metric logging, model registry (`ArabicSentiment`), and artifact storage |
 | **Data Versioning** | DVC with configurable remote storage (local / S3) |
 | **Code Quality** | Ruff linter & formatter, mypy static type checking, pre-commit hooks |
 | **Testing** | pytest + pytest-cov test suite |
@@ -210,6 +210,51 @@ uv run dvc repro
 ```
 
 This pipeline automatically tracks the steps using **MLflow** (logging metrics like min/max string length, exact/fuzzy duplicates removed, and final split row counts) and outputs reports to `reports/preprocess_metrics.json`.
+
+---
+
+## Baseline Model Training
+
+AraBERT v2 (`aubmindlab/bert-base-arabertv02`) was fine-tuned on the processed splits via a **6-run Kaggle GPU sweep** (varying `lr` and `batch_size`). The best run was registered as `ArabicSentiment → Production` in the MLflow Model Registry.
+
+```bash
+# Training script (Hydra config, run on Kaggle GPU)
+uv run python -m raay.training.train [lr=2e-5 batch_size=32]
+
+# Evaluate against the held-out test set
+uv run python -m raay.training.evaluate \
+  --model-dir models/baseline/final \
+  --test-file data/processed/test.csv
+```
+
+### Baseline Results (`reports/eval_baseline.json`)
+
+| Metric | Value |
+|---|---|
+| Accuracy | **84.9 %** |
+| F1 (macro) | **0.641** |
+| F1 (weighted) | 0.841 |
+
+**Per-class F1:**
+
+| Class | Precision | Recall | F1 | Support |
+|---|---|---|---|---|
+| Positive | 0.880 | 0.909 | **0.895** | 4 152 |
+| Negative | 0.846 | 0.853 | **0.850** | 2 691 |
+| Neutral | 0.245 | 0.139 | **0.178** | 366 |
+
+> **Note:** Neutral class underperforms due to heavy class imbalance (~5 % of test set).
+
+**Dialect breakdown:**
+
+| Dialect | n | Accuracy | F1 macro |
+|---|---|---|---|
+| MSA | 3 322 | 85.7 % | 0.605 |
+| Gulf | 1 145 | 86.2 % | 0.682 |
+| Egyptian | 1 011 | 82.4 % | 0.647 |
+| Levantine | 1 129 | 82.4 % | 0.631 |
+| Maghrebi | 357 | 92.2 % | 0.668 |
+| Arabizi | 245 | 80.0 % | 0.538 |
 
 ---
 
