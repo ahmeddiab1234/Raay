@@ -215,7 +215,7 @@ This pipeline automatically tracks the steps using **MLflow** (logging metrics l
 
 ## Baseline Model Training
 
-AraBERT v2 (`aubmindlab/bert-base-arabertv02`) was fine-tuned on the processed splits via a **6-run [Kaggle](https://www.kaggle.com/code/codecaoch/raay-training) GPU sweep** (varying `lr` and `batch_size`). The best run was registered as `ArabicSentiment → Production` in the MLflow Model Registry.
+AraBERT v2 (`aubmindlab/bert-base-arabertv02`) was fine-tuned on the processed splits via a **6-run [Kaggle](https://www.kaggle.com/code/codecaoch/raay-training/edit/run/346908504) GPU sweep** (varying `lr` and `batch_size`). The best run was registered as `ArabicSentiment → Production` in the MLflow Model Registry.
 
 ```bash
 # Training script (Hydra config, run on Kaggle GPU)
