@@ -1,20 +1,5 @@
 <div align="center">
 
-# Raay راي
-
-**Arabic E-Commerce Product Review Sentiment Analysis**
-
-An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / Negative / Neutral) at scale — supporting Modern Standard Arabic and regional dialects (Egyptian, Gulf, Levantine).
-
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
-[![uv](https://img.shields.io/badge/package%20manager-uv-blueviolet)](https://docs.astral.sh/uv/)
-[![Ruff](https://img.shields.io/badge/linter-ruff-orange)](https://docs.astral.sh/ruff/)
-[![MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2)](https://mlflow.org/)
-[![DVC](https://img.shields.io/badge/data%20versioning-DVC-945DD6)](https://dvc.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-</div>
-
 ---
 
 ## Overview
@@ -27,20 +12,21 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 
 ## Features
 
-| Category | Details |
-|---|---|
-| **3-Class Sentiment** | Positive · Negative · Neutral classification with confidence scores |
-| **Arabic NLP** | MSA + dialect support (Egyptian, Gulf, Levantine, Arabizi/franco-arabe) |
-| **Transformer-based** | AraBERT backbone with HuggingFace Transformers & Accelerate |
+
+| Category                | Details                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| **3-Class Sentiment**   | Positive · Negative · Neutral classification with confidence scores               |
+| **Arabic NLP**          | MSA + dialect support (Egyptian, Gulf, Levantine, Arabizi/franco-arabe)             |
+| **Transformer-based**   | AraBERT backbone with HuggingFace Transformers & Accelerate                         |
 | **Experiment Tracking** | MLflow for metric logging, model registry (`ArabicSentiment`), and artifact storage |
-| **Data Versioning** | DVC with configurable remote storage (local / S3) |
-| **Code Quality** | Ruff linter & formatter, mypy static type checking, pre-commit hooks |
-| **Testing** | pytest + pytest-cov test suite |
-| **Configuration** | Hydra-based hierarchical config management |
-| **Serving** | BentoML for model packaging and REST API serving |
-| **Typed Schemas** | Pydantic models for data validation across the pipeline |
-| **Structured Logging** | Loguru for structured, leveled logging |
-| **CLI** | Typer-based command-line interface |
+| **Data Versioning**     | DVC with configurable remote storage (local / S3)                                   |
+| **Code Quality**        | Ruff linter & formatter, mypy static type checking, pre-commit hooks                |
+| **Testing**             | pytest + pytest-cov test suite                                                      |
+| **Configuration**       | Hydra-based hierarchical config management                                          |
+| **Serving**             | BentoML for model packaging and REST API serving                                    |
+| **Typed Schemas**       | Pydantic models for data validation across the pipeline                             |
+| **Structured Logging**  | Loguru for structured, leveled logging                                              |
+| **CLI**                 | Typer-based command-line interface                                                  |
 
 ---
 
@@ -80,22 +66,23 @@ raay/
 
 ## Tech Stack
 
-| Layer | Tool |
-|---|---|
-| Language | Python 3.12+ |
-| Package Manager | [uv](https://docs.astral.sh/uv/) |
-| Deep Learning | PyTorch, HuggingFace Transformers, Accelerate |
-| Experiment Tracking | MLflow (Dockerized server) |
-| Data Versioning | DVC (S3 / local remote) |
-| Model Serving | BentoML |
-| Config Management | Hydra |
-| Data Validation | Pydantic |
-| Linting & Formatting | Ruff |
-| Type Checking | mypy |
-| Testing | pytest, pytest-cov |
-| Pre-commit | pre-commit (ruff, mypy, DVC hooks) |
-| Logging | Loguru |
-| CLI | Typer |
+
+| Layer                | Tool                                          |
+| ---------------------- | ----------------------------------------------- |
+| Language             | Python 3.12+                                  |
+| Package Manager      | [uv](https://docs.astral.sh/uv/)              |
+| Deep Learning        | PyTorch, HuggingFace Transformers, Accelerate |
+| Experiment Tracking  | MLflow (Dockerized server)                    |
+| Data Versioning      | DVC (S3 / local remote)                       |
+| Model Serving        | BentoML                                       |
+| Config Management    | Hydra                                         |
+| Data Validation      | Pydantic                                      |
+| Linting & Formatting | Ruff                                          |
+| Type Checking        | mypy                                          |
+| Testing              | pytest, pytest-cov                            |
+| Pre-commit           | pre-commit (ruff, mypy, DVC hooks)            |
+| Logging              | Loguru                                        |
+| CLI                  | Typer                                         |
 
 ---
 
@@ -104,10 +91,11 @@ raay/
 The system currently relies on the following key datasets for training and validation:
 
 1. **[330K Arabic Sentiment Reviews (arabic_sentiment_reviews.csv)](https://www.kaggle.com/datasets/abdallaellaithy/330k-arabic-sentiment-reviews)**
+
    - **Size:** 330,000 reviews (212.23 MB)
    - **Description:** A large-scale binary sentiment dataset containing Arabic product reviews. It is labeled with `1` for positive and `0` for negative. This provides a massive foundation for training robust Arabic NLP models.
-
 2. **[Arabic Customer Reviews (Final_Data.csv)](https://www.kaggle.com/datasets/mohamedramadan2040/arabic-customer-reviews)**
+
    - **Size:** ~36,000 reviews (4.44 MB)
    - **Description:** Customer reviews in Arabic collected from various companies and products. Includes review text, sentiment ratings, and the associated company. This dataset is actively used in the current preprocessing and modeling version.
 
@@ -215,7 +203,7 @@ This pipeline automatically tracks the steps using **MLflow** (logging metrics l
 
 ## Baseline Model Training
 
-AraBERT v2 (`aubmindlab/bert-base-arabertv02`) was fine-tuned on the processed splits via a **6-run Kaggle GPU sweep** (varying `lr` and `batch_size`). The best run was registered as `ArabicSentiment → Production` in the MLflow Model Registry.
+AraBERT v2 (`aubmindlab/bert-base-arabertv02`) was fine-tuned on the processed splits via a **6-run [Kaggle]([www.kaggle.com/code/codecaoch/raay-training](https://www.kaggle.com/code/codecaoch/raay-training)) GPU sweep** (varying `lr` and `batch_size`). The best run was registered as `ArabicSentiment → Production` in the MLflow Model Registry.
 
 ```bash
 # Training script (Hydra config, run on Kaggle GPU)
@@ -229,39 +217,43 @@ uv run python -m raay.training.evaluate \
 
 ### Baseline Results (`reports/eval_baseline.json`)
 
-| Metric | Value |
-|---|---|
-| Accuracy | **84.9 %** |
-| F1 (macro) | **0.641** |
-| F1 (weighted) | 0.841 |
+
+| Metric        | Value      |
+| --------------- | ------------ |
+| Accuracy      | **84.9 %** |
+| F1 (macro)    | **0.641**  |
+| F1 (weighted) | 0.841      |
 
 **Per-class F1:**
 
-| Class | Precision | Recall | F1 | Support |
-|---|---|---|---|---|
-| Positive | 0.880 | 0.909 | **0.895** | 4 152 |
-| Negative | 0.846 | 0.853 | **0.850** | 2 691 |
-| Neutral | 0.245 | 0.139 | **0.178** | 366 |
+
+| Class    | Precision | Recall | F1        | Support |
+| ---------- | ----------- | -------- | ----------- | --------- |
+| Positive | 0.880     | 0.909  | **0.895** | 4 152   |
+| Negative | 0.846     | 0.853  | **0.850** | 2 691   |
+| Neutral  | 0.245     | 0.139  | **0.178** | 366     |
 
 > **Note:** Neutral class underperforms due to heavy class imbalance (~5 % of test set).
 
 **Dialect breakdown:**
 
-| Dialect | n | Accuracy | F1 macro |
-|---|---|---|---|
-| MSA | 3 322 | 85.7 % | 0.605 |
-| Gulf | 1 145 | 86.2 % | 0.682 |
-| Egyptian | 1 011 | 82.4 % | 0.647 |
-| Levantine | 1 129 | 82.4 % | 0.631 |
-| Maghrebi | 357 | 92.2 % | 0.668 |
-| Arabizi | 245 | 80.0 % | 0.538 |
+
+| Dialect   | n     | Accuracy | F1 macro |
+| ----------- | ------- | ---------- | ---------- |
+| MSA       | 3 322 | 85.7 %   | 0.605    |
+| Gulf      | 1 145 | 86.2 %   | 0.682    |
+| Egyptian  | 1 011 | 82.4 %   | 0.647    |
+| Levantine | 1 129 | 82.4 %   | 0.631    |
+| Maghrebi  | 357   | 92.2 %   | 0.668    |
+| Arabizi   | 245   | 80.0 %   | 0.538    |
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Example |
-|---|---|---|
+
+| Variable              | Description       | Example                 |
+| ----------------------- | ------------------- | ------------------------- |
 | `MLFLOW_TRACKING_URI` | MLflow server URL | `http://localhost:5000` |
 
 ---
@@ -273,7 +265,3 @@ This project is licensed under the MIT License.
 ---
 
 <div align="center">
-
-**Raay راي** — Giving every Arabic review a voice.
-
-</div>
