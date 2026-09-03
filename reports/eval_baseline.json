@@ -78,7 +78,7 @@
     }
   },
   "metadata": {
-    "model_dir": "models/baseline/final",
+    "model_dir": "/kaggle/input/datasets/codecaoch/final-data",
     "model_name": "aubmindlab/bert-base-arabertv02",
     "max_length": 128,
     "tokenizer_version": 64000
