@@ -1,0 +1,86 @@
+{
+  "label_names": [
+    "positive",
+    "negative",
+    "neutral"
+  ],
+  "accuracy": 0.8492162574559579,
+  "f1_macro": 0.6406636813692393,
+  "f1_weighted": 0.8414290183632694,
+  "per_class": {
+    "positive": {
+      "precision": 0.8803638059701493,
+      "recall": 0.9092003853564548,
+      "f1": 0.8945497630331753,
+      "support": 4152
+    },
+    "negative": {
+      "precision": 0.8462956137117582,
+      "recall": 0.8532144184318098,
+      "f1": 0.8497409326424871,
+      "support": 2691
+    },
+    "neutral": {
+      "precision": 0.24519230769230768,
+      "recall": 0.13934426229508196,
+      "f1": 0.17770034843205576,
+      "support": 366
+    }
+  },
+  "confusion_matrix": [
+    [
+      3775,
+      297,
+      80
+    ],
+    [
+      318,
+      2296,
+      77
+    ],
+    [
+      195,
+      120,
+      51
+    ]
+  ],
+  "sample_size": 7209,
+  "dialect_breakdown": {
+    "arabizi": {
+      "count": 245,
+      "accuracy": 0.8,
+      "f1_macro": 0.5378636195098931
+    },
+    "egyptian": {
+      "count": 1011,
+      "accuracy": 0.8239366963402571,
+      "f1_macro": 0.6474816994150817
+    },
+    "gulf": {
+      "count": 1145,
+      "accuracy": 0.8620087336244542,
+      "f1_macro": 0.6818122892031501
+    },
+    "levantine": {
+      "count": 1129,
+      "accuracy": 0.8237378210806023,
+      "f1_macro": 0.6310143374434664
+    },
+    "maghrebi": {
+      "count": 357,
+      "accuracy": 0.9215686274509803,
+      "f1_macro": 0.6679141593333169
+    },
+    "msa": {
+      "count": 3322,
+      "accuracy": 0.8570138470800722,
+      "f1_macro": 0.605055058796947
+    }
+  },
+  "metadata": {
+    "model_dir": "models/baseline/final",
+    "model_name": "aubmindlab/bert-base-arabertv02",
+    "max_length": 128,
+    "tokenizer_version": 64000
+  }
+}
