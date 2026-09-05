@@ -584,6 +584,11 @@ def _loggable_params(cfg: DictConfig) -> dict[str, Any]:
         key_str = str(key)
         if key_str.startswith("hydra"):
             continue
+        if key_str == "model_name":
+            # The distiller logs model_name separately (as `distilled`) so the
+            # baseline/distill sweep filter can tell the two run families apart;
+            # the config value is the *teacher's* repo id and must not collide.
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             params[key_str] = value
     return params

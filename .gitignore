@@ -44,7 +44,7 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 AGENTS.md
-
+models/distilled
 # Unit test / coverage reports
 htmlcov/
 .tox/
