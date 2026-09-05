@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import warnings
 from pathlib import Path
 from typing import Any
@@ -45,7 +44,9 @@ from sklearn.metrics import (
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 import mlflow
+from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.data.dialect import add_dialect_column
+from raay.enums.constants import DefaultPaths, Experiments, Models
 
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
@@ -238,20 +239,23 @@ def plot_mlflow_comparison(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-dir", default="models/baseline/final")
-    parser.add_argument("--test-file", default="data/processed/test.csv")
-    parser.add_argument("--model-name", default="aubmindlab/bert-base-arabertv02")
-    parser.add_argument("--output", default="reports/eval_baseline.json")
-    parser.add_argument("--experiment", default="raay_training")
+    parser.add_argument("--model-dir", default=DefaultPaths.BASELINE_MODEL.value)
+    parser.add_argument("--test-file", default=DefaultPaths.TEST_SPLIT.value)
+    parser.add_argument("--model-name", default=Models.TEACHER.value)
+    parser.add_argument("--output", default=DefaultPaths.EVAL_BASELINE.value)
+    parser.add_argument("--experiment", default=Experiments.TRAINING.value)
     parser.add_argument("--tracking-uri", default=None)
     parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument("--comparison-plot", default=None)
     args = parser.parse_args()
 
-    os.environ.setdefault("MLFLOW_TRACKING_URI", args.tracking_uri or "file:./mlruns")
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns")
-    if tracking_uri.startswith("file:"):
-        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+    load_environment()
+    tracking_uri = (
+        args.tracking_uri
+        if args.tracking_uri
+        else mlflow_tracking_uri(default="file:./mlruns")
+    )
+    mlflow.set_tracking_uri(tracking_uri)
 
     logger.info(f"Loading test data from {args.test_file}")
     test_df = pd.read_csv(args.test_file)

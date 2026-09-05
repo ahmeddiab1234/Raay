@@ -6,10 +6,14 @@ from loguru import logger
 from sklearn.model_selection import train_test_split
 
 import mlflow
+from raay.config.env import load_environment
 from raay.data.dialect import add_dialect_column
+from raay.enums.constants import DefaultPaths, Experiments, SplitFileNames
 
 
-def load_config(config_path: str = "params.yaml") -> dict:
+def load_config(
+    config_path: str = DefaultPaths.PARAMS.value,
+) -> dict:
     """Load split configuration."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
@@ -45,14 +49,15 @@ def perform_stratified_split(
 
 
 def main():
+    load_environment()
     config = load_config()
     split_config = config.get("split", {})
     test_size = split_config.get("test_size", 0.2)
     val_size = split_config.get("val_size", 0.1)
     random_state = split_config.get("random_state", 42)
 
-    input_path = Path("data/interim/normalized.csv")
-    output_dir = Path("data/processed")
+    input_path = Path(DefaultPaths.INTERIM_DATA.value)
+    output_dir = Path(DefaultPaths.PROCESSED_DATA.value)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Loading normalized data from {input_path}")
@@ -61,7 +66,7 @@ def main():
     logger.info("Tagging heuristic dialect column...")
     df = add_dialect_column(df, text_col="text")
 
-    mlflow.set_experiment("raay_preprocessing")
+    mlflow.set_experiment(Experiments.PREPROCESSING.value)
     with mlflow.start_run(run_name="data_splitting"):
         mlflow.log_params(split_config)
 
@@ -81,9 +86,9 @@ def main():
             {f"dialect_{k}": float(v) for k, v in sorted(dialect_counts.items())}
         )
 
-        train_path = output_dir / "train.csv"
-        val_path = output_dir / "val.csv"
-        test_path = output_dir / "test.csv"
+        train_path = output_dir / SplitFileNames.TRAIN.value
+        val_path = output_dir / SplitFileNames.VALIDATION.value
+        test_path = output_dir / SplitFileNames.TEST.value
 
         train_df.to_csv(train_path, index=False)
         val_df.to_csv(val_path, index=False)

@@ -44,6 +44,7 @@ from transformers import (
 )
 
 import mlflow
+from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.data.dialect import add_dialect_column
 
 # pyarabic (a transitive dep of `arabert`) emits noisy SyntaxWarnings on import.
@@ -192,13 +193,13 @@ def build_training_args(cfg: DictConfig) -> TrainingArguments:
 @hydra.main(version_base=None, config_path="../../../configs", config_name="train")
 def main(cfg: DictConfig) -> None:
     global _PREPROCESSOR
+    load_environment()
 
     # Disable Hydra's own MLflow autologging to avoid double-logging; we log
-    # explicitly below. Use a file store unless overridden (Kaggle sessions
-    # track to a local file store; local dev may use sqlite://).
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns")
-    if tracking_uri.startswith("file:"):
-        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+    # explicitly below. Track to the configured store (Kaggle sessions use a
+    # local file store; local dev may use sqlite://); file stores get the
+    # MLFLOW_ALLOW_FILE_STORE workaround automatically.
+    mlflow_tracking_uri(default="file:./mlruns")
     if "mlflow.autolog" in str(OmegaConf.to_container(cfg, resolve=True)):
         mlflow.autolog(disable=True)
 

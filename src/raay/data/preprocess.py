@@ -10,6 +10,8 @@ from loguru import logger
 from rapidfuzz import fuzz, process
 
 import mlflow
+from raay.config.env import load_environment
+from raay.enums.constants import DefaultPaths, Experiments
 
 # Regex patterns
 ARABIC_DIACRITICS = re.compile(r"[\u064B-\u065F\u0670]")
@@ -18,7 +20,7 @@ EMOJI_PATTERN = re.compile(r"[\U00010000-\U0010ffff]", flags=re.UNICODE)
 ELONGATION_PATTERN = re.compile(r"(.)\1{2,}")
 
 
-def load_config(config_path: str = "params.yaml") -> dict[str, Any]:
+def load_config(config_path: str = DefaultPaths.PARAMS.value) -> dict[str, Any]:
     """Load preprocessing configuration."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
@@ -101,8 +103,10 @@ def fuzzy_deduplicate(
 
 
 def main():
+    load_environment()
+
     # Set up logging
-    log_dir = Path("logs")
+    log_dir = Path(DefaultPaths.LOGS.value)
     log_dir.mkdir(exist_ok=True)
     logger.add(log_dir / f"preprocess_{int(time.time())}.log")
 
@@ -112,9 +116,9 @@ def main():
     elongation_max_repeat = prep_config.get("elongation_max_repeat", 2)
     dedup_similarity_threshold = prep_config.get("dedup_similarity_threshold", 0.9)
 
-    raw_data_path = Path("data/raw/Final_Data.csv")
-    interim_data_path = Path("data/interim/normalized.csv")
-    metrics_path = Path("reports/preprocess_metrics.json")
+    raw_data_path = Path(DefaultPaths.RAW_DATA.value)
+    interim_data_path = Path(DefaultPaths.INTERIM_DATA.value)
+    metrics_path = Path(DefaultPaths.PREPROCESS_METRICS.value)
 
     interim_data_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +139,7 @@ def main():
     logger.info(f"Raw row count: {raw_row_count}")
 
     # MLflow tracking
-    mlflow.set_experiment("raay_preprocessing")
+    mlflow.set_experiment(Experiments.PREPROCESSING.value)
     with mlflow.start_run(run_name="preprocessing_pipeline"):
         mlflow.log_params(prep_config)
 

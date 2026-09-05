@@ -38,7 +38,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +46,8 @@ from typing import cast
 from loguru import logger
 
 import mlflow
+from raay.config.env import env_str, load_environment, mlflow_tracking_uri
+from raay.enums.constants import DefaultPaths, EnvVar, Experiments, Models
 
 SWEEP = [
     # (learning_rate, batch_size)
@@ -70,9 +71,9 @@ DISTILL_SWEEP = [
 
 
 def _tracking_uri() -> str:
-    uri = os.environ.get("MLFLOW_TRACKING_URI", "file:" + str(Path("mlruns").resolve()))
-    if uri.startswith("file:"):
-        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+    uri = mlflow_tracking_uri(
+        default="file:" + str(Path(DefaultPaths.LOCAL_MLRUNS.value).resolve())
+    )
     return uri
 
 
@@ -80,11 +81,11 @@ def _data_overrides() -> list[str]:
     """Hydra overrides pointing at the processed-DataFrame snapshot.
 
     On Kaggle the processed splits arrive as a Dataset snapshot mounted under
-    ``/kaggle/input/<dataset>/``; set ``KAGGLE_DATA_DIR`` (or ``DATA_ROOT``) to
-    that directory so the runs read from there instead of the repo-relative
+    ``/kaggle/input/<dataset>/``; set ``DATA_ROOT`` (legacy ``KAGGLE_DATA_DIR``)
+    to that directory so the runs read from there instead of the repo-relative
     defaults. Locally, unset -> default to ``data/processed``.
     """
-    root = os.environ.get("KAGGLE_DATA_DIR") or os.environ.get("DATA_ROOT")
+    root = env_str(EnvVar.KAGGLE_DATA_DIR) or env_str(EnvVar.DATA_ROOT)
     if not root:
         return []
     root_path = Path(root)
@@ -92,8 +93,8 @@ def _data_overrides() -> list[str]:
         cand = root_path / f"{name}.csv"
         if not cand.exists():
             raise FileNotFoundError(
-                f"{cand} not found. Point DATA_ROOT at the dir containing the "
-                "processed train/val/test.csv snapshot."
+                f"{cand} not found. Point {EnvVar.DATA_ROOT.value} at the dir "
+                "containing the processed train/val/test.csv snapshot."
             )
     return [
         f"train_file={root_path / 'train.csv'}",
@@ -109,7 +110,7 @@ def _teacher_dir(args: argparse.Namespace) -> str | None:
     Hydra config default (``models/baseline/final``) is used, which is the
     correct value for standalone/local runs.
     """
-    return args.teacher_dir or os.environ.get("KAGGLE_TEACHER_DIR") or None
+    return args.teacher_dir or env_str(EnvVar.KAGGLE_TEACHER_DIR) or None
 
 
 def _train_command(
@@ -123,7 +124,7 @@ def _train_command(
         f"batch_size={bs}",
         f"save_model={'true' if save_model else 'false'}",
         f"run_tag={run_tag}",
-        "hydra.run.dir=./outputs/train",
+        f"hydra.run.dir=./{DefaultPaths.OUTPUT_DIR_TRAIN.value}",
         *_data_overrides(),
     ]
 
@@ -149,7 +150,7 @@ def _distill_command(
         f"temperature={temperature}",
         f"save_model={'true' if save_model else 'false'}",
         f"run_tag={run_tag}",
-        "hydra.run.dir=./outputs/distill",
+        f"hydra.run.dir=./{DefaultPaths.OUTPUT_DIR_DISTILL.value}",
         *_data_overrides(),
     ]
     if teacher_dir:
@@ -307,7 +308,7 @@ def register_best(experiment_name: str, model_name: str, stage: str, mode: str) 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--n", type=int, default=len(SWEEP), help="Number of runs")
-    parser.add_argument("--experiment", default="raay_training")
+    parser.add_argument("--experiment", default=Experiments.TRAINING.value)
     parser.add_argument(
         "--module",
         choices=["train", "distill"],
@@ -333,11 +334,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    load_environment()
+
     repo_root = Path(__file__).resolve().parent.parent
     mode = args.module
     teacher_dir = _teacher_dir(args)
     model_name = args.model_name or (
-        "ArabicSentimentDistilled" if mode == "distill" else "ArabicSentiment"
+        Models.REGISTERED_DISTILLED.value
+        if mode == "distill"
+        else Models.REGISTERED_BASELINE.value
     )
 
     if not args.no_train:

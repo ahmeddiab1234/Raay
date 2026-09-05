@@ -53,6 +53,7 @@ from transformers import (
 )
 
 import mlflow
+from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.data.dialect import add_dialect_column
 
 # pyarabic (a transitive dep of `arabert`) emits noisy SyntaxWarnings on import.
@@ -387,10 +388,9 @@ class _BestStepLogger(TrainerCallback):
 @hydra.main(version_base=None, config_path="../../../configs", config_name="distill")
 def main(cfg: DictConfig) -> None:
     global _PREPROCESSOR
+    load_environment()
 
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "file:./mlruns")
-    if tracking_uri.startswith("file:"):
-        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
+    mlflow_tracking_uri(default="file:./mlruns")
     if "mlflow.autolog" in str(OmegaConf.to_container(cfg, resolve=True)):
         mlflow.autolog(disable=True)
 
