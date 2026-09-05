@@ -1,0 +1,84 @@
+# Knowledge-distillation configuration (Hydra), mirroring configs/train.yaml.
+# Override at the CLI, e.g.:
+#   uv run python -m raay.training.distill \
+#       alpha=0.4 temperature=4.0 learning_rate=3e-5 batch_size=16
+#
+# hydra.job.chdir is disabled so this stage keeps CWD at the repo root (the
+# baseline trainer and stage scripts all resolve paths relative to repo root).
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ./outputs/distill/${now:%Y-%m-%d}_${now:%H-%M-%S}
+
+# Teacher: an AraBERT sentiment checkpoint (baseline final weights) whose logits
+# we distill from. Can be an HF repo id or a local path.
+teacher_model: models/baseline/final
+# Architecture the student reuses from the teacher config (tokenizer/vocab).
+model_name: aubmindlab/bert-base-arabertv02
+
+# Student setup: truncate the teacher's encoder to these layers. AutoModel is
+# re-initialised from an AutoConfig with num_hidden_layers overridden, keeping
+# the same tokenizer/vocab as the teacher.
+student_layers: 6
+
+# Distillation knobs: loss = alpha * CE(student, labels)
+#                       + (1 - alpha) * T^2 * KL(student/T, teacher/T)
+alpha: 0.4
+temperature: 4.0
+
+# Fine-tuning hyper-parameters (distillation sweep axis).
+learning_rate: 3e-5
+batch_size: 16
+max_length: 128
+epochs: 3
+seed: 42
+# 0 (default) => train for `epochs`; set > 0 to cap to a fixed step budget
+# (used to bound short CPU smoke tests).
+max_steps: 0
+
+# Guard rail: fail loudly instead of training when no CUDA GPU is available.
+# Set require_gpu=false only for deliberate local CPU smoke tests.
+require_gpu: true
+
+# Task / modelling (must match the teacher's classification head).
+num_labels: 3
+labels: [positive, negative, neutral]
+
+# Optimizer / scheduler
+weight_decay: 0.01
+warmup_steps: 0
+gradient_accumulation_steps: 1
+
+# Evaluation / checkpointing
+eval_steps: 500
+save_steps: 500
+logging_steps: 100
+save_total_limit: 2
+load_best_model_at_end: true
+metric_for_best_model: eval_f1_macro
+
+# Data (identical splits to the baseline so results are comparable)
+train_file: data/processed/train.csv
+val_file: data/processed/val.csv
+test_file: data/processed/test.csv
+
+# MLflow
+experiment_name: raay_training
+
+# Checkpoint / artifact output (relative to repo root).
+output_dir: models/distilled
+
+# Directory (relative to repo root) holding cached teacher logits (train/val).
+# The logits depend only on the teacher + data, so a hyperparameter sweep over
+# alpha/temperature/lr/or batch_size computes them once and reuses the files.
+# '' disables caching (recompute every run).
+teacher_logits_cache: models/distilled/teacher_logits
+
+# Persist weights + log model artifacts; set false during a sweep so candidates
+# only log metrics/params (no checkpoints / mlruns artifacts).
+save_model: true
+
+# Placed by the Kaggle driver script; not used by the local CLI entrypoint.
+run_tag: local

@@ -104,6 +104,7 @@ docs/pr*.md
 
 # Training artifacts (regenerated on Kaggle/GPU or via DVC; never commit)
 models/baseline/
+models/distilled/
 outputs/
 reports/mlflow_comparison.png
 
