@@ -3,7 +3,53 @@ import torch
 from transformers import BertConfig, BertForSequenceClassification
 
 from raay.inference.export_onnx import export_to_onnx
-from raay.serving.serve import predict_probs, softmax, to_predictions
+from raay.serving.serve import (
+    _resolve_onnx_path,
+    predict_probs,
+    softmax,
+    to_predictions,
+)
+
+
+def test_resolve_uses_raay_onnx_path_override():
+    env = {"RAAY_ONNX_PATH": "/tmp/override.onnx"}
+    source, path, detail = _resolve_onnx_path(env.get, download=lambda uri: uri)
+    assert source == "RAAY_ONNX_PATH"
+    assert path == "/tmp/override.onnx"
+    assert detail == "/tmp/override.onnx"
+
+
+def test_resolve_from_registry_alias(tmp_path):
+    model_dir = tmp_path / "registered"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_bytes(b"fake")
+    env = {}
+    source, path, _ = _resolve_onnx_path(env.get, download=lambda uri: str(model_dir))
+    assert source == "models:/ArabicSentiment/Production"
+    assert path == str(model_dir / "model.onnx")
+
+
+def test_resolve_registry_alias_missing_onnx_raises(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    try:
+        _resolve_onnx_path({}.get, download=lambda uri: str(empty))
+    except RuntimeError as exc:
+        assert "model.onnx" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for missing model.onnx")
+
+
+def test_resolve_raises_when_download_fails():
+    def boom(_uri):
+        raise RuntimeError("no such model")
+
+    try:
+        _resolve_onnx_path({}.get, download=boom)
+    except RuntimeError as exc:
+        assert "RAAY_ONNX_PATH" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError when the alias is unresolvable")
 
 
 def test_softmax_rows_sum_to_one_and_argmax_preserved():

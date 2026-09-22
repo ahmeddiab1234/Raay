@@ -251,6 +251,11 @@ def main() -> None:
         stage=args.stage,
         archive_existing_versions=True,
     )
+    # The serving loader resolves models:/<name>/<alias>; set the alias next
+    # to the (deprecated) stage so a promotion is picked up on restart.
+    client.set_registered_model_alias(
+        args.registered_name, args.stage, registered.version
+    )
     client.set_model_version_tag(
         args.registered_name, registered.version, "variant", args.winner
     )

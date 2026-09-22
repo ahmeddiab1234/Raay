@@ -1,9 +1,9 @@
-"""BentoML serving endpoint for the INT8-compressed AraBERT ONNX model.
+"""BentoML serving endpoint for the compressed AraBERT ONNX model.
 
-Phase 3 (compression/optimization), step 5: serve the dynamically quantized
-``models/onnx/model_int8.onnx`` graph through BentoML. This is the decision
-artifact for the GPU/TensorRT question: run it, measure p50/p95/p99 against
-the product SLA, and only pursue a TRT engine if the numbers miss.
+Phase 3 (compression/optimization), step 5 + step 8: serve the dynamically
+quantized ``models/onnx/model_int8.onnx`` graph through BentoML. This is the
+decision artifact for the GPU/TensorRT question: run it, measure p50/p95/p99
+against the product SLA, and only pursue a TRT engine if the numbers miss.
 
 Run from the repo root:
 
@@ -18,12 +18,17 @@ then POST to http://localhost:3000/predict:
 Request/response use BentoML's new-style pydantic I/O descriptors
 (``bentoml.api``; the ``bentoml.io`` module is deprecated since v1.4). The
 service lazy-loads per worker: an ORT CPU session plus the HF tokenizer and
-label map from the fine-tuned tokenizer dir. Behaviour is env-tunable:
+label map from the fine-tuned tokenizer dir. The ONNX source is env-tunable:
 
-    RAAY_ONNX_PATH      ONNX graph to serve (default models/onnx/model_int8.onnx)
-    RAAY_TOKENIZER_DIR  checkpoint dir for tokenizer + id2label (default models/baseline/final)
-    RAAY_MAX_LENGTH     tokenizer truncation length (default 128)
-    RAAY_MODEL_NAME     ArabertPreprocessor model name (default aubmindlab/bert-base-arabertv02)
+    RAAY_ONNX_PATH           explicit graph override (default: none). Kept for
+                             the benchmark/Locust drivers and quick dev swaps.
+    RAAY_REGISTERED_MODEL    registered model name (default ArabicSentiment)
+    RAAY_ALIAS               registry alias to resolve (default Production)
+                             -> loads models:/<name>/<alias> via mlflow, so a
+                             newly promoted model is picked up on restart.
+    RAAY_TOKENIZER_DIR       checkpoint dir for tokenizer + id2label (default models/baseline/final)
+    RAAY_MAX_LENGTH          tokenizer truncation length (default 128)
+    RAAY_MODEL_NAME          ArabertPreprocessor model name (default aubmindlab/bert-base-arabertv02)
 
 The predict/softmax machinery is module-level so the benchmark
 (``raay.serving.benchmark``) and unit tests reuse it without a BentoML
@@ -35,6 +40,8 @@ from __future__ import annotations
 import os
 import threading
 import warnings
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -44,6 +51,7 @@ from loguru import logger
 from pydantic import BaseModel
 from transformers import AutoConfig, AutoTokenizer
 
+from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Models
 
 warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -53,8 +61,9 @@ try:
 except ImportError:  # pragma: no cover - import path guard
     ArabertPreprocessor = None
 
-_DEFAULT_ONNX_PATH = DefaultPaths.ONNX_INT8_MODEL.value
 _DEFAULT_TOKENIZER_DIR = DefaultPaths.BASELINE_MODEL.value
+_DEFAULT_REGISTERED_MODEL = Models.REGISTERED_BASELINE.value
+_DEFAULT_ALIAS = "Production"
 _DEFAULT_MAX_LENGTH = 128
 _BATCH_SIZE = 32
 
@@ -72,6 +81,45 @@ def _preprocess(text: str, model_name: str) -> str:
             model_name, ArabertPreprocessor(model_name=model_name)
         )
     return proc.preprocess(text)
+
+
+def _download_artifacts(uri: str) -> Any:
+    """Resolve a model URI to a local directory via the .env MLflow store."""
+    import mlflow
+
+    load_environment()
+    mlflow.set_tracking_uri(mlflow_tracking_uri(default="file:./mlruns"))
+    return mlflow.artifacts.download_artifacts(uri)
+
+
+def _resolve_onnx_path(
+    env_get: Callable[..., Any], *, download: Callable[..., Any] = _download_artifacts
+) -> tuple[str, str, str]:
+    """Return ``(source_label, onnx_path, detail)`` for the graph to serve.
+
+    ``RAAY_ONNX_PATH`` is an explicit override (kept for the benchmark/Locust
+    drivers and ad-hoc swaps). Otherwise the named model's ``Production``
+    alias is resolved via ``download`` so serving picks up whichever model is
+    promoted on the next worker start.
+    """
+    explicit = env_get("RAAY_ONNX_PATH")
+    if explicit:
+        return "RAAY_ONNX_PATH", str(explicit), str(explicit)
+    registered_model = env_get("RAAY_REGISTERED_MODEL", _DEFAULT_REGISTERED_MODEL)
+    alias = env_get("RAAY_ALIAS", _DEFAULT_ALIAS)
+    uri = f"models:/{registered_model}/{alias}"
+    try:
+        model_dir = Path(str(download(uri)))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not resolve {uri}: {exc}. Register + promote a model first "
+            f"(uv run python scripts/log_variants_mlflow.py) or set "
+            f"RAAY_ONNX_PATH to a local graph."
+        ) from exc
+    onnx_path = model_dir / "model.onnx"
+    if not onnx_path.exists():
+        raise RuntimeError(f"{uri} resolved to {model_dir} but has no model.onnx")
+    return uri, str(onnx_path), str(model_dir)
 
 
 def softmax(logits: np.ndarray) -> np.ndarray:
@@ -157,7 +205,7 @@ class RaaySV:
         with self._lock:
             if self._loaded:
                 return
-            onnx_path = os.environ.get("RAAY_ONNX_PATH", _DEFAULT_ONNX_PATH)
+            source_label, onnx_path, _detail = _resolve_onnx_path(os.environ.get)
             tokenizer_dir = os.environ.get("RAAY_TOKENIZER_DIR", _DEFAULT_TOKENIZER_DIR)
             self._session = ort.InferenceSession(
                 onnx_path, providers=["CPUExecutionProvider"]
@@ -168,7 +216,7 @@ class RaaySV:
             self._id2label = {int(k): v for k, v in raw.items()}
             self._loaded = True
             logger.info(
-                f"Serving {onnx_path} via "
+                f"Serving {onnx_path} [{source_label}] via "
                 f"{self._session.get_providers()} with labels {self._id2label}"
             )
 
