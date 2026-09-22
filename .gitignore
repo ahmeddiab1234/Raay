@@ -2,6 +2,8 @@ commands_run_p*.txt
 .venv/
 __pycache__/
 mlruns/
+# mlflow Model dir materialized for registry registration (log_variants_mlflow.py)
+reports/models/
 *.pt
 *.onnx
 *.onnx.data
