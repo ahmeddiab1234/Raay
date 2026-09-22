@@ -41,6 +41,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
+    "locust>=2.27.0",
     "mypy>=2.3.1",
     "notebook>=7.6.2",
     "pandas-stubs>=3.0.5.260730",
