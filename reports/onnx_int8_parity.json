@@ -1,0 +1,6 @@
+{
+  "n_samples": 6,
+  "max_abs_diff": 0.4646037220954895,
+  "mean_abs_diff": 0.10430614650249481,
+  "label_agreement": 1.0
+}

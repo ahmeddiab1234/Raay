@@ -15,6 +15,16 @@ Run from the repo root:
         --output reports/eval_baseline.json \
         --experiment raay_training
 
+To benchmark an exported/quantized ONNX model instead of a torch checkpoint,
+point ``--onnx-path`` at the graph and keep ``--model-dir`` at its checkpoint
+dir (used for tokenizer + label map):
+
+    uv run python -m raay.training.evaluate \
+        --model-dir models/baseline/final \
+        --onnx-path models/onnx/model_int8.onnx \
+        --test-file data/processed/test.csv \
+        --output reports/eval_int8.json
+
 Also writes ``reports/mlflow_comparison.png`` (a bar chart comparing f1_macro
 across the ``raay_training`` MLflow runs) when ``--comparison-plot`` is set.
 """
@@ -32,6 +42,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+import onnxruntime as ort
 import pandas as pd
 import torch
 from loguru import logger
@@ -65,28 +76,43 @@ def _preprocess(text: str, model_name: str) -> str:
 def load_model(model_dir: str):
     model = AutoModelForSequenceClassification.from_pretrained(model_dir)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    id2label = getattr(model.config, "id2label", None)
+    id2label = getattr(getattr(model, "config", None), "id2label", None)
     return model, tokenizer, id2label
+
+
+def load_onnx_session(onnx_path: str) -> ort.InferenceSession:
+    """Load an exported ONNX model for evaluation (frontends an ORT session)."""
+    return ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
 
 
 def predict(
     model: Any, tokenizer: Any, texts: list[str], model_name: str, max_length: int
 ) -> np.ndarray:
-    model.eval()
+    """Predict labels; ``model`` is either a torch Module or an ORT session."""
+    ort_session = isinstance(model, ort.InferenceSession)
     probs_list: list[np.ndarray] = []
     batch_size = 32
-    with torch.no_grad():
-        for i in range(0, len(texts), batch_size):
-            batch = [_preprocess(t, model_name) for t in texts[i : i + batch_size]]
-            batch_enc = tokenizer(
-                batch,
-                truncation=True,
-                padding=True,
-                max_length=max_length,
-                return_tensors="pt",
-            )
-            logits = model(**batch_enc).logits
-            probs_list.append(logits.detach().numpy())
+    for i in range(0, len(texts), batch_size):
+        batch = [_preprocess(t, model_name) for t in texts[i : i + batch_size]]
+        batch_enc = tokenizer(
+            batch,
+            truncation=True,
+            padding=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        if ort_session:
+            logits = model.run(
+                ["logits"],
+                {
+                    key: batch_enc[key].numpy()
+                    for key in ("input_ids", "attention_mask")
+                },
+            )[0]
+        else:
+            with torch.no_grad():
+                logits = model(**batch_enc).logits.detach().numpy()
+        probs_list.append(logits)
     return np.argmax(np.concatenate(probs_list, axis=0), axis=-1)
 
 
@@ -124,7 +150,7 @@ def evaluate_on_split(
     model_name: str,
     max_length: int,
 ) -> dict[str, Any]:
-    id2label = getattr(model.config, "id2label", None)
+    id2label = getattr(getattr(model, "config", None), "id2label", None)
     raw_labels = df["label"].tolist()
     # Map string labels to indices via id2label if present, else textual order.
     if id2label and raw_labels and isinstance(raw_labels[0], str):
@@ -240,6 +266,14 @@ def plot_mlflow_comparison(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", default=DefaultPaths.BASELINE_MODEL.value)
+    parser.add_argument(
+        "--onnx-path",
+        default=None,
+        help=(
+            "If set, run inference through this exported ONNX model via "
+            "onnxruntime instead of the PyTorch checkpoint in --model-dir."
+        ),
+    )
     parser.add_argument("--test-file", default=DefaultPaths.TEST_SPLIT.value)
     parser.add_argument("--model-name", default=Models.TEACHER.value)
     parser.add_argument("--output", default=DefaultPaths.EVAL_BASELINE.value)
@@ -260,15 +294,24 @@ def main() -> None:
     logger.info(f"Loading test data from {args.test_file}")
     test_df = pd.read_csv(args.test_file)
 
-    logger.info(f"Loading model from {args.model_dir}")
-    model, tokenizer, _ = load_model(args.model_dir)
-
     metadata = {
         "model_dir": args.model_dir,
         "model_name": args.model_name,
         "max_length": args.max_length,
-        "tokenizer_version": getattr(tokenizer, "vocab_size", None),
+        "tokenizer_version": None,
     }
+    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
+
+    if args.onnx_path:
+        logger.info(f"Loading ONNX model from {args.onnx_path}")
+        model = load_onnx_session(args.onnx_path)
+        metadata["onnx_path"] = args.onnx_path
+        metadata["backend"] = "onnxruntime"
+        metadata["tokenizer_version"] = getattr(tokenizer, "vocab_size", None)
+    else:
+        logger.info(f"Loading model from {args.model_dir}")
+        model, tokenizer, _ = load_model(args.model_dir)
+        metadata["tokenizer_version"] = getattr(tokenizer, "vocab_size", None)
 
     report = evaluate_on_split(
         test_df, model, tokenizer, args.model_name, args.max_length
