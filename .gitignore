@@ -4,6 +4,7 @@ __pycache__/
 mlruns/
 *.pt
 *.onnx
+*.onnx.data
 *.engine
 .env
 docs/pr1.md
