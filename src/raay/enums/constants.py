@@ -46,6 +46,7 @@ class DefaultPaths(str, Enum):
     ONNX_PARITY = "reports/onnx_parity.json"
     ONNX_INT8_PARITY = "reports/onnx_int8_parity.json"
     SERVING_BENCHMARK = "reports/serving_benchmark.json"
+    QUEUE_BENCHMARK = "reports/queue_benchmark.json"
     ONNX_DIR = "models/onnx"
     ONNX_MODEL = "models/onnx/model.onnx"
     ONNX_DISTILLED = "models/onnx/distilled.onnx"

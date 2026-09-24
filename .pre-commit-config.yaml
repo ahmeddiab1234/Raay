@@ -25,6 +25,7 @@ repos:
         additional_dependencies:
           - "pydantic>=2.7.0"
           - types-PyYAML>=6.0.12.20260815
+          - types-redis>=4.6.0
         args: ["--ignore-missing-imports"]
         exclude: ^tests/
 

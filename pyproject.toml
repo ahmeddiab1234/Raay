@@ -25,6 +25,7 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "rapidfuzz>=3.14.5",
+    "redis>=5.2.0",
     "scikit-learn>=1.9.0",
     "torch>=2.13.0",
     "transformers>=5.15.1",
@@ -51,6 +52,7 @@ dev = [
     "ruff>=0.16.4",
     "seaborn>=0.13.2",
     "types-pyyaml>=6.0.12.20260815",
+    "types-redis>=4.6.0.20241004",
     "wordcloud>=1.9.6",
 ]
 

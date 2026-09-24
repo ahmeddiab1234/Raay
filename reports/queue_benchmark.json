@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "backend": "MemoryQueue",
+    "mode": "benchmark",
+    "max_batch_size": 32,
+    "max_wait_ms": 100,
+    "overhead_ms_per_call": 20.0,
+    "onnx_path": "models/onnx/model_int8.onnx",
+    "tokenizer_dir": "models/baseline/final",
+    "n_requested": 128,
+    "n_processed": 128,
+    "n_leftover": 0
+  },
+  "micro_batch": {
+    "batches": 4,
+    "avg_batch_size": 32.0,
+    "fill_ratio_avg": 1.0,
+    "fill_p50": 1.0,
+    "drain_time_sec": 0.6040645290013344,
+    "score_time_sec": 9.433479847999479,
+    "inference_work_sec": 10.037544377000813,
+    "elapsed_sec": 10.038788432000729,
+    "reviews_per_sec": 12.750542644366659,
+    "work_reviews_per_sec": 12.752122948844784,
+    "call_amortization": 32.0
+  },
+  "serial_reference": {
+    "n_calls": 128,
+    "elapsed_sec": 2.4849951489995874,
+    "overhead_sec": 2.56,
+    "total_sec": 5.044995148999588,
+    "reviews_per_sec": 25.3716795001046,
+    "avg_ms_per_review": 39.414024601559284
+  },
+  "speedup_vs_serial": {
+    "pure_cpu": 0.2475700286509813,
+    "with_overhead": 0.4986383020437116
+  }
+}
