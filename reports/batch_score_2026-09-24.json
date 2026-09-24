@@ -1,0 +1,16 @@
+{
+  "n_reviews": 1000,
+  "elapsed_sec": 74.90005479699903,
+  "batch_size": 64,
+  "label_columns": [
+    "positive",
+    "negative",
+    "neutral"
+  ],
+  "class_proportions": {
+    "positive": 577,
+    "negative": 397,
+    "neutral": 26
+  },
+  "target_label": "label"
+}

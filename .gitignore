@@ -132,3 +132,6 @@ _build_eda*.py
 # remove from .gitignore , GitHub should acces it for README.md and reports
 reports/eda/Final_Data_first_data_only/figures/*.png
 reports/eda/Final_Data_first_data_only/summary_states.json
+
+# local Airflow runtime (dag scheduler/webserver state; DAGs themselves live in airflow/dags/)
+airflow_runtime/
