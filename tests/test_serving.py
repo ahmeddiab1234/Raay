@@ -1,14 +1,100 @@
+import asyncio
+
 import numpy as np
 import torch
 from transformers import BertConfig, BertForSequenceClassification
 
 from raay.inference.export_onnx import export_to_onnx
 from raay.serving.serve import (
+    HealthRouteMiddleware,
+    Validation422Middleware,
     _resolve_onnx_path,
     predict_probs,
     softmax,
+    svc,
     to_predictions,
 )
+
+
+def test_service_has_middlewares():
+    middlewares = [cls for cls, _ in svc.middlewares]
+    assert HealthRouteMiddleware in middlewares
+    assert Validation422Middleware in middlewares
+
+
+def test_health_middleware_returns_status_json():
+    async def _passthrough(_scope, _receive, _send):
+        raise AssertionError("downstream app must not be reached for /health")
+
+    middleware = HealthRouteMiddleware(_passthrough)
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/health",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("127.0.0.1", 3000),
+        "client": ("127.0.0.1", 50000),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    asyncio.run(middleware(scope, receive, send))
+    assert messages[0]["type"] == "http.response.start"
+    assert messages[0]["status"] == 200
+    body = b"".join(m["body"] for m in messages[1:])
+    assert body == b'{"status":"healthy"}'
+
+
+def _run_middleware(middleware_cls, body, status=400):
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def downstream(_scope, _receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/predict",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("127.0.0.1", 3000),
+        "client": ("127.0.0.1", 50000),
+    }
+    middleware = middleware_cls(downstream)
+    asyncio.run(middleware(scope, receive, send))
+    return messages
+
+
+def test_validation_422_middleware_rewrites_pydantic_400():
+    body = (
+        b'{"error": "1 validation error for PredictRequest", '
+        b'"detail": [{"loc": ["texts"], "msg": "Field required", "type": "missing"}]}'
+    )
+    messages = _run_middleware(Validation422Middleware, body)
+    assert messages[0]["status"] == 422
+    assert b"".join(m["body"] for m in messages[1:]) == body
+
+
+def test_validation_422_middleware_leaves_non_validation_400():
+    body = b'{"error": "task_id is required"}'
+    messages = _run_middleware(Validation422Middleware, body)
+    assert messages[0]["status"] == 400
 
 
 def test_resolve_uses_raay_onnx_path_override():

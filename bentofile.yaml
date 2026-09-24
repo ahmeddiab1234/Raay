@@ -1,0 +1,39 @@
+service: "raay.serving.serve:svc"
+name: "raay-sentiment"
+description: |
+  Real-time Arabic e-commerce review sentiment API over the CPU INT8
+  AraBERT ONNX graph. POST /predict with {"texts": [...]}; GET /health
+  liveness probe.
+
+labels:
+  stage: production
+  variant: onnx-int8
+
+include:
+  - "src/raay/**"
+  - "models/baseline/final/config.json"
+  - "models/baseline/final/tokenizer.json"
+  - "models/baseline/final/tokenizer_config.json"
+  - "models/onnx/model_int8.onnx"
+
+envs:
+  - name: "PYTHONPATH"
+    value: "/home/bentoml/bento/src"
+
+python:
+  is_src_layout: true
+  packages:
+    - "--extra-index-url https://download.pytorch.org/whl/cpu"
+    - "arabert>=1.0.1"
+    - "loguru>=0.7.3"
+    - "mlflow>=3.15.1"
+    - "numpy>=2.5.2"
+    - "onnxruntime>=1.18.0"
+    - "pydantic>=2.13.4"
+    - "python-dotenv>=1.2.3"
+    - "starlette>=0.46.0"
+    - "torch>=2.13.0"
+    - "transformers>=5.15.1"
+
+docker:
+  python_version: "3.12"

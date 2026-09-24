@@ -37,6 +37,7 @@ round-trip.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import warnings
@@ -49,6 +50,7 @@ import onnxruntime as ort
 from bentoml import Service, api
 from loguru import logger
 from pydantic import BaseModel
+from starlette.responses import JSONResponse
 from transformers import AutoConfig, AutoTokenizer
 
 from raay.config.env import load_environment, mlflow_tracking_uri
@@ -241,4 +243,93 @@ class RaaySV:
         )
 
 
+class HealthRouteMiddleware:
+    """Serve ``GET /health`` as a top-level route returning ``{"status": "healthy"}``.
+
+    BentoML only lets us mount ASGI apps at a prefix, and a Starlette ``Mount``
+    307-redirects the bare prefix to a trailing slash (``/health`` ->
+    ``/health/``); a middleware short-circuits the exact path instead, so the
+    Docker ``HEALTHCHECK`` and ``curl`` both see a plain 200 on ``/health``.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("path") == "/health":
+            response = JSONResponse({"status": "healthy"})
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+_VALIDATION_ERROR_MARKER = "validation error for"
+
+
+class Validation422Middleware:
+    """Rewrite BentoML's pydantic-validation ``400`` responses to ``422``.
+
+    BentoML 1.4 maps a ``pydantic.ValidationError`` to ``400``; the phase
+    checklist (and AGENTS.md) promise ``422`` for malformed/missing payloads.
+    This buffers a ``400`` response body and re-emits status ``422`` when the
+    payload matches the framework's validation-error shape (``error``
+    containing "validation error for" plus a ``detail`` list).
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        buffer: dict[str, Any] = {}
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                if message["status"] != 400:
+                    await send(message)
+                    return
+                buffer["status"] = message["status"]
+                buffer["headers"] = message["headers"]
+                buffer["chunks"] = []
+                return
+            if "chunks" not in buffer:
+                await send(message)
+                return
+            if message["type"] == "http.response.body":
+                buffer["chunks"].append(message.get("body", b""))
+                if not message.get("more_body"):
+                    await self._emit(
+                        buffer["headers"], b"".join(buffer["chunks"]), send
+                    )
+            return
+
+        await self.app(scope, receive, send_wrapper)
+
+    async def _emit(self, headers: Any, body: bytes, send: Any) -> None:
+        status = 400
+        try:
+            payload = json.loads(body)
+            error: Any = payload.get("error")
+            is_validation_error = (
+                isinstance(error, str) and _VALIDATION_ERROR_MARKER in error
+            ) and isinstance(payload.get("detail"), list)
+        except (ValueError, TypeError, AttributeError):
+            is_validation_error = False
+        if is_validation_error:
+            status = 422
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
 svc = Service(name="raay-sentiment", inner=RaaySV)
+svc.add_asgi_middleware(HealthRouteMiddleware)
+svc.add_asgi_middleware(Validation422Middleware)
