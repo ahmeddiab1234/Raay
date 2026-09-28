@@ -1,0 +1,51 @@
+# Staging deployment: an immutable, SHA-pinned copy of the release image.
+#
+# Applied by scripts/deploy_staging.py (copied to /opt/raay-staging/ by the
+# CD workflow) as:
+#
+#   RAAY_IMAGE=ghcr.io/ahmeddiab1234/arabic-sentiment:<commit-sha> \
+#     docker compose pull raay-sentiment && docker compose up -d
+#
+# Deliberately standalone rather than an override of docker-compose.yml: the
+# prod file also carries the canary worker, the nginx canary front and Redis,
+# none of which belong on a staging box. The deploy tool drives this file
+# directly, so anything that could make it build from the repo instead of
+# pulling the published image is a bug -- there is deliberately no `build:`
+# block here.
+#
+# `name: staging` keeps the project (and therefore the container name and
+# network) separate from the prod project, so both can run on one host without
+# fighting over ports or networks. Port 8080 is used because prod owns 8000
+# (API) and 8081 (canary front).
+#
+# No `env_file:`: the .env in this repo holds dead Kaggle paths. The image bakes
+# its own RAAY_ONNX_PATH / RAAY_TOKENIZER_DIR / RAAY_MODEL_VERSION, so the only
+# thing that has to be injected here is the image reference.
+name: staging
+
+services:
+  raay-sentiment:
+    # The `:?` guard is load-bearing: without RAAY_IMAGE the variable would
+    # interpolate to an empty string and compose would try to build a service
+    # with no image at all, which fails far away from the real cause.
+    image: ${RAAY_IMAGE:?RAAY_IMAGE must be set to an immutable ghcr.io/...:<commit-sha> tag}
+    container_name: raay-staging-sentiment
+    ports:
+      - "8080:3000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # The int8 ORT session plus the HF tokenizer take a few seconds to load;
+      # without this the first probe races the lazy import and the deploy looks
+      # unhealthy.
+      start_period: 60s
+    restart: unless-stopped
+    # Give compose time to finish the in-flight request before SIGKILL, so a
+    # redeploy does not turn a slow prediction into a 502 for a client.
+    stop_grace_period: 20s

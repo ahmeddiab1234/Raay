@@ -78,6 +78,11 @@ jobs:
       contents: read
       # Only the publish step needs this, and only to push to GHCR.
       packages: write
+    outputs:
+      # Consumed by deploy-staging, which asserts the service it finds on the
+      # host reports this exact version. Without the cross-check a stale image
+      # left over on the box could pass a bare "is it healthy" check.
+      model_version: ${{ steps.build.outputs.MODEL_VERSION }}
     steps:
       - uses: actions/checkout@v5
 
@@ -282,3 +287,173 @@ jobs:
             echo "| floating | \`${{ env.IMAGE }}:latest\` |"
             echo "| digest | \`${digest}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    # An environment is what makes the approval gate, the per-environment
+    # secrets and the deployment history all work. Leave the reviewers list
+    # empty to deploy automatically, or add required reviewers to make every
+    # release wait for a human.
+    environment: staging
+    # Never cancel a deploy in flight: interrupting between "pull the new image"
+    # and "roll back" is how staging ends up on neither version.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      # Read from environment variables, falling back to secrets so either
+      # storage works. These three are not really secret -- they are the address
+      # of the box -- but there is no harm in them being secrets.
+      STAGING_SSH_HOST: ${{ vars.STAGING_SSH_HOST || secrets.STAGING_SSH_HOST }}
+      STAGING_SSH_USER: ${{ vars.STAGING_SSH_USER || secrets.STAGING_SSH_USER }}
+      STAGING_SSH_PORT: ${{ vars.STAGING_SSH_PORT || secrets.STAGING_SSH_PORT || '22' }}
+      STAGING_REPOSITORY: ${{ github.repository_owner }}/arabic-sentiment
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fail early with an actionable message if staging is unconfigured
+        # A half-configured environment should not surface as an opaque
+        # "Permission denied (publickey)" three steps later.
+        #
+        # HAS_KEY is a boolean rather than the key itself: the agent that
+        # installs the key runs in the *next* step, so there is no key file to
+        # look for yet, and a secret is not readable from a shell `if`.
+        env:
+          HAS_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${STAGING_SSH_HOST}" ] || missing="${missing} STAGING_SSH_HOST"
+          [ -n "${STAGING_SSH_USER}" ] || missing="${missing} STAGING_SSH_USER"
+          [ "${HAS_KEY}" = "true" ] || missing="${missing} STAGING_SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing on the 'staging' environment:${missing}"
+            echo "Set the host/user/port as environment variables and the key as a secret."
+            exit 1
+          fi
+          known_hosts="${GITHUB_WORKSPACE}/deploy/staging_known_hosts"
+          # Match the key *type* after the hostname, not at the start of the
+          # line: a real known_hosts entry is "<host> ssh-ed25519 AAAA...", so an
+          # anchored ^ would reject every legitimate file. Comments are stripped
+          # first, otherwise the file's own "a valid entry looks like
+          # <host> ssh-ed25519 AAAA..." documentation satisfies the check and an
+          # entirely unpopulated file passes.
+          if ! grep -vE '^[[:space:]]*(#|$)' "$known_hosts" 2>/dev/null \
+            | grep -qE '[[:space:]](ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+)[[:space:]]'; then
+            echo "::error::deploy/staging_known_hosts holds no host key, so the deploy would"
+            echo "either fail host-key verification or (if it were disabled) trust anything."
+            echo "Populate it with: ssh-keyscan -p ${STAGING_SSH_PORT} ${STAGING_SSH_HOST} | ssh-keygen -lf -"
+            exit 1
+          fi
+
+      - name: Trust the staging host key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          grep -vE '^[[:space:]]*(#|$)' deploy/staging_known_hosts > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          cat ~/.ssh/known_hosts
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+
+      - name: Check the staging host
+        run: |
+          set -euo pipefail
+          target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
+          ssh -p "$STAGING_SSH_PORT" "$target" 'set -e
+            command -v docker >/dev/null || { echo "docker is not installed on the staging host"; exit 1; }
+            docker compose version >/dev/null
+            python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+            # Both directories are created up front and owned by the deploy user
+            # so no step below needs root; keeping the state file outside the
+            # checkout is what lets it survive a redeploy of the tools.
+            mkdir -p /opt/raay-staging /var/lib/raay-staging
+            test -w /opt/raay-staging && test -w /var/lib/raay-staging || {
+              echo "the deploy user needs write access to /opt/raay-staging and /var/lib/raay-staging";
+              exit 1; }
+            echo "staging host OK: $(docker --version)"'
+
+      - name: Copy the deploy tool
+        run: |
+          set -euo pipefail
+          target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
+          scp -P "$STAGING_SSH_PORT" \
+            docker-compose.staging.yml scripts/deploy_staging.py \
+            "$target:/opt/raay-staging/"
+
+      - name: Hand over the registry token
+        # Written to a file over stdin and read back with --registry-token-file,
+        # so the token never appears in argv, in a log line or in `ps` output on
+        # the host. The package is private, which is why a read:packages PAT is
+        # needed here at all -- the runner's GITHUB_TOKEN is not sent.
+        env:
+          REGISTRY_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+          target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
+          printf '%s' "$REGISTRY_TOKEN" | ssh -p "$STAGING_SSH_PORT" "$target" \
+            'umask 077; cat > /var/lib/raay-staging/registry-token'
+
+      - name: Deploy
+        # The script is the gate: it pulls the immutable SHA, waits for health,
+        # checks the model version and the three fixed Arabic predictions, and
+        # rolls back to the last SHA that passed if any of that fails. Every
+        # path other than a clean deploy must leave the job red.
+        env:
+          MODEL_VERSION: ${{ needs.docker-build.outputs.model_version }}
+        run: |
+          set -uo pipefail
+          target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
+          out=$(mktemp); err=$(mktemp)
+          ssh -p "$STAGING_SSH_PORT" "$target" \
+            "python3 /opt/raay-staging/deploy_staging.py \
+               --target-sha '${{ github.sha }}' \
+               --repository '${STAGING_REPOSITORY}' \
+               --expect-model-version '${MODEL_VERSION}' \
+               --registry-token-file /var/lib/raay-staging/registry-token" \
+            > "$out" 2> "$err"
+          rc=$?
+          cat "$out"; cat "$err" >&2
+          {
+            echo ""
+            echo "### Staging deploy"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| image | \`${{ env.STAGING_REPOSITORY }}:${{ github.sha }}\` |"
+            echo "| expected model version | \`${MODEL_VERSION}\` |"
+            echo "| result | \`$(if [ $rc -eq 0 ]; then echo success; else echo FAILED; fi)\` |"
+            echo ""
+            echo "<details><summary>deploy report</summary>"
+            echo ""
+            echo '```json'
+            head -c 20000 "$out"
+            echo '```'
+            if [ -s "$err" ]; then
+              echo ""
+              echo "<details><summary>container logs</summary>"
+              echo ""
+              echo '```'
+              tail -c 8000 "$err"
+              echo '```'
+            fi
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ $rc -ne 0 ]; then
+            echo "::error::Staging deploy failed; see the rollback state in the report above."
+            exit 1
+          fi
+
+      - name: Remove the registry token
+        # Always runs: a token left on disk is a credential leak, including on
+        # the failure path where this is the only step that still executes.
+        if: always()
+        run: |
+          ssh -p "$STAGING_SSH_PORT" "${STAGING_SSH_USER}@${STAGING_SSH_HOST}" \
+            'shred -u /var/lib/raay-staging/registry-token 2>/dev/null || rm -f /var/lib/raay-staging/registry-token'

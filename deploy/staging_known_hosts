@@ -1,0 +1,21 @@
+# Staging host keys for the CD deploy job (.github/workflows/cd.yml).
+#
+# This file is committed on purpose: the deploy refuses to disable host-key
+# checking, so the runner has to be told which key the staging box presents.
+# A host key is a public value -- there is nothing secret in it.
+#
+# Populate it with the real staging host, once, and commit the result:
+#
+#   ssh-keyscan -p 22 staging.example.com > deploy/staging_known_hosts
+#   ssh-keygen -lf deploy/staging_known_hosts      # note the fingerprint
+#
+# Verify that fingerprint out of band (the provider's console) before committing
+# it: `ssh-keyscan` returns whatever answers on port 22, which is exactly what an
+# active man-in-the-middle would want you to trust.
+#
+# The file is currently unpopulated on purpose -- the staging host has not been
+# provisioned yet. The deploy job detects this and fails with the ssh-keyscan
+# command above rather than connecting with verification switched off.
+#
+# A valid entry is one line: "<host> ssh-ed25519 AAAA...". The guard in cd.yml
+# matches the key type after the hostname, not at the start of the line.
