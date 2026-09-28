@@ -564,7 +564,9 @@ nightly PSI drift alert will eventually push through). It:
 1. **Checks out `dev`** (the workflow file lives on `main` because GitHub only
    schedules default-branch files, but data changes land on `dev`);
 2. **Pulls the raw CSV and re-runs** `dvc pull data/raw/Final_Data.csv.dvc`
-   → `dvc repro` → verifies `dvc status` is clean;
+   → `dvc repro` → verifies `dvc status preprocess split` is clean (scoped to
+   the pipeline stages; the job never pulls the DVC-tracked serving artifacts,
+   so a repo-wide status would read them as "not in cache");
 3. **Early-exits on no-op**: if `dvc repro` left `dvc.lock` unchanged (the lock
    embeds the raw input md5), nothing moved — the run stops, costing nothing;
 4. **Gates the split** with the *same* `scripts/ci_metrics_gate.py` CI uses, at
@@ -602,7 +604,7 @@ The pipeline is four workflow files with one shared quality gate and one mover o
 
 ### 6.1 CI — gate every change to `dev`
 
-`lint` (ruff check, ruff format --check, mypy) → `test` (pytest with coverage) → `pipeline` (`needs: [lint, test]`): `dvc pull data/raw/Final_Data.csv.dvc` → `dvc repro` → `dvc status` must be clean → `scripts/ci_metrics_gate.py --threshold 0.005` diffs `reports/split_metrics.json` against the merge-base and posts the table as a PR comment → `git diff --exit-code dvc.lock`. At ±0.005 the integer counts must match exactly; proportions may move half a point. Fork PRs run lint+test but skip the secret-dependent DVC steps.
+`lint` (ruff check, ruff format --check, mypy) → `test` (pytest with coverage) → `pipeline` (`needs: [lint, test]`): `dvc pull data/raw/Final_Data.csv.dvc` → `dvc repro` → `dvc status preprocess split` must be clean (scoped to the pipeline stages — the job never pulls the DVC-tracked serving artifacts, and lock reproducibility is enforced by the `git diff --exit-code dvc.lock` step at the end) → `scripts/ci_metrics_gate.py --threshold 0.005` diffs `reports/split_metrics.json` against the merge-base and posts the table as a PR comment → `git diff --exit-code dvc.lock`. At ±0.005 the integer counts must match exactly; proportions may move half a point. Fork PRs run lint+test but skip the secret-dependent DVC steps.
 
 ### 6.2 CD — publish an image only from `main`
 

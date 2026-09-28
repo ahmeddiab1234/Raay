@@ -141,7 +141,13 @@ jobs:
 
       - name: Check for untracked pipeline outputs
         run: |
-          status=$(uv run ${{ env.UV_FLAGS }} dvc status)
+          # Bare `dvc status` would also report the DVC-tracked serving
+          # artifacts (models/onnx/model_int8.onnx, models/baseline/final/*) as
+          # "not in cache" -- this job intentionally pulls only the raw CSV and
+          # repro rebuilds just the preprocess/split pipeline. Scope the check
+          # to the pipeline stages; dvc.lock reproducibility is enforced by the
+          # step after the metrics gate.
+          status=$(uv run ${{ env.UV_FLAGS }} dvc status preprocess split)
           echo "$status"
           if ! grep -q "up to date" <<<"$status"; then
             echo "::error::DVC reported a dirty pipeline after repro."

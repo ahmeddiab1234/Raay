@@ -97,9 +97,12 @@ jobs:
 
       - name: Assert the pipeline is clean
         # A dirty tree after repro is a pipeline/infra break, not a data
-        # refresh -- fail loudly rather than gate garbage.
+        # refresh -- fail loudly rather than gate garbage. Scoped to the
+        # preprocess/split stages: this job never pulls the DVC-tracked serving
+        # artifacts (models/**), so a bare `dvc status` would always read them
+        # as "not in cache" here.
         run: |
-          status=$(uv run ${{ env.UV_FLAGS }} dvc status)
+          status=$(uv run ${{ env.UV_FLAGS }} dvc status preprocess split)
           echo "$status"
           if ! grep -q "up to date" <<<"$status"; then
             echo "::error::DVC reported a dirty pipeline after repro -- that is" \
