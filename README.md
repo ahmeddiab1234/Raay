@@ -389,8 +389,8 @@ curl -s http://localhost:3000/predict \
 ```json
 {
   "predictions": [
-    {"label": "positive", "score": 0.98},
-    {"label": "negative", "score": 0.94}
+    {"label": "positive", "score": 0.9914},
+    {"label": "negative", "score": 0.9899}
   ]
 }
 ```
