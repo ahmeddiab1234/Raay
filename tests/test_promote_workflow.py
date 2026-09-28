@@ -115,9 +115,9 @@ def test_gate_job_cannot_promote(workflow):
         "inspectable before a human approves it"
     )
     # A second, un-flagged invocation would promote behind the human's back.
-    assert (
-        runs.count("scripts/promote_model.py") == 1
-    ), "a second invocation could promote"
+    assert runs.count("scripts/promote_model.py") == 1, (
+        "a second invocation could promote"
+    )
 
 
 def test_promote_job_is_the_one_that_moves_the_alias(workflow):
@@ -144,21 +144,21 @@ def test_both_jobs_resolve_the_graph_on_their_own_runner(workflow):
     """
     for job in ("gate", "promote"):
         steps = [s for s in _steps(workflow, job) if "uses" in s]
-        assert any(
-            s["uses"] == "./.github/actions/resolve-candidate" for s in steps
-        ), f"{job} does not resolve the candidate graph itself"
+        assert any(s["uses"] == "./.github/actions/resolve-candidate" for s in steps), (
+            f"{job} does not resolve the candidate graph itself"
+        )
 
 
 def test_no_filesystem_path_crosses_the_job_boundary(workflow):
     """Job outputs are scalars; a resolved path is not."""
     outputs = workflow["jobs"]["gate"].get("outputs", {})
     text = yaml.safe_dump(outputs)
-    assert (
-        "candidate_onnx" not in text
-    ), "the gate job must not export a path from its own filesystem"
-    assert outputs["candidate_version"] == (
-        "${{ steps.inputs.outputs.version }}"
-    ), "only the version may cross the boundary"
+    assert "candidate_onnx" not in text, (
+        "the gate job must not export a path from its own filesystem"
+    )
+    assert outputs["candidate_version"] == ("${{ steps.inputs.outputs.version }}"), (
+        "only the version may cross the boundary"
+    )
 
 
 def test_the_promote_job_gates_the_version_a_human_approved(workflow):
@@ -182,9 +182,9 @@ def test_the_shared_resolver_is_valid_yaml_and_refuses_external_weights():
     assert resolver["runs"]["using"] == "composite"
     assert set(resolver["outputs"]) == {"version", "onnx"}
     script = yaml.safe_dump(resolver)
-    assert (
-        ".onnx.data" in script
-    ), "a graph with an external sidecar must be refused, not gated as one file"
+    assert ".onnx.data" in script, (
+        "a graph with an external sidecar must be refused, not gated as one file"
+    )
     assert "download_artifacts" in script
 
 

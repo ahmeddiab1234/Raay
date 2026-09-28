@@ -59,10 +59,11 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel                                      |
 | **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
 | **Canary Rollout**         | Standalone nginx-fronted project: shadow-mirror then 5/95→100 %, gated on Prometheus |
+| **Scheduled Retraining**   | Weekly `retrain.yml` re-runs DVC on newly versioned data, gates proportions, opens a `dev` PR |
 | **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases                  |
 | **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
 | **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
-| **Testing**                | pytest suite (96 unit tests, hermetic — no GPU, no network, no servers)                                       |
+| **Testing**                | pytest suite (432 unit tests, hermetic — no GPU, no network, no servers)                                 |
 | **Configuration**          | Hydra for training/distillation; `params.yaml` for the DVC data stages                                        |
 | **Typed Schemas**          | Pydantic I/O models for the serving contract                                                                   |
 | **Structured Logging**     | Loguru for structured, leveled logging                                                                         |
@@ -548,26 +549,59 @@ request object, so its `$request_id` differs from the main request's and
 client-sent headers). Correlation therefore happens in the agent on the
 request content, which the mirror *does* clone: it pairs stable/candidate
 events by `X-Request-ID` when a client supplies one, otherwise by the SHA-256
-of the request `texts`. 45 hermetic tests in `tests/test_canary_nginx.py`
+of the request `texts`. 46 hermetic tests in `tests/test_canary_nginx.py`
 (renderer per stage, fake MLflow client, fake Prometheus — no nginx binary
 needed).
+
+### 5.8 Scheduled Retraining Hooks (Step 6)
+
+`.github/workflows/retrain.yml` watches for **newly versioned raw data** and
+turns it into a reviewable model-update PR. Weekly (Monday 04:12 UTC), on
+demand, or on a `repository_dispatch` (`event_type: retrain` — the seam the
+nightly PSI drift alert will eventually push through). It:
+
+1. **Checks out `dev`** (the workflow file lives on `main` because GitHub only
+   schedules default-branch files, but data changes land on `dev`);
+2. **Pulls the raw CSV and re-runs** `dvc pull data/raw/Final_Data.csv.dvc`
+   → `dvc repro` → verifies `dvc status` is clean;
+3. **Early-exits on no-op**: if `dvc repro` left `dvc.lock` unchanged (the lock
+   embeds the raw input md5), nothing moved — the run stops, costing nothing;
+4. **Gates the split** with the *same* `scripts/ci_metrics_gate.py` CI uses, at
+   ±0.005, with one documented escape hatch: `--ignore '.*_size$'` removes the
+   integer sizes/counts from the diff. A refresh is exactly the case where those
+   SHOULD move; label/dialect **proportions** are still compared strictly, and a
+   brand-new label/dialect class (a key with no baseline) fails the gate on
+   purpose;
+5. **On PASS** pushes branch `retrain/data-<date>` (`dvc.lock` + both metrics
+   jsons) and opens a PR into `dev` with the gate table as its body — noting
+   that CI's *own* gate will show the count rows red on that PR by design;
+6. **On FAIL** prints `::error::` and exits 1 (an alarm, never a silent skip),
+   uploading the report either way (→ `reports/data_refresh_<date>.{json,md}`,
+   git-ignored).
+
+The refresh threshold defaults to `0.005` and is dispatch-overridable via
+`client_payload.threshold`; a dispatch `client_payload.reason` is echoed in the
+run summary. ~19 structural tests in `tests/test_retrain_workflow.py`; the
+`--ignore` change to `ci_metrics_gate.py` leaves the default path byte-identical,
+so CI's own gate is untouched (35 tests).
 
 ---
 
 ## Testing
 
-406 hermetic unit tests — no GPU, no network, no running servers:
+432 hermetic unit tests — no GPU, no network, no running servers:
 
 | Suite                            | Tests | Covers                                                                    |
 | -------------------------------- | ----: | ------------------------------------------------------------------------- |
 | `tests/test_promote_model.py`  |    66 | Phase 6 promotion gate (14 gates, latency A/B, dry-run safety)            |
 | `tests/test_cd_workflow.py`    |    48 | CD workflow contract (build → inspect → smoke test → push)                |
 | `tests/test_canary_nginx.py`   |    46 | Conf renderer per stage, compose, rollout semantics, gate math            |
-| `tests/test_canary_agent.py`   |    24 | Shadow pairing (request-id + content), gaps, Prometheus text              |
+| `tests/test_canary_agent.py`   |    22 | Shadow pairing (request-id + content), gaps, Prometheus text              |
 | `tests/test_serving.py`        |    36 | BentoML service, health middleware, 422 validation, telemetry events      |
 | `tests/test_deploy_staging.py` |    36 | Staging deploy tool (flip/schema/unhealthy rollback paths)                |
 | `tests/test_promote_workflow.py`|   29 | Promotion workflow contract (gate → human → re-gate)                     |
-| `tests/test_ci_metrics_gate.py`|    28 | Split-metrics diff gate                                                    |
+| `tests/test_ci_metrics_gate.py`|    35 | Split-metrics diff gate (incl. `--ignore` refresh mode)                   |
+| `tests/test_retrain_workflow.py`|   19 | Step 6 retrain workflow structural contract                               |
 | `tests/test_batch_consumer.py` |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer              |
 | `tests/test_ci_workflow.py`    |    20 | CI workflow structural contract                                           |
 | `tests/test_batch_score.py`    |    14 | Input sampling, scoring, PSI drift verdicts                               |

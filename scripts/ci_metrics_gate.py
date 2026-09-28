@@ -19,6 +19,9 @@ Usage (from the repo root):
     uv run python scripts/ci_metrics_gate.py --base origin/dev
     uv run python scripts/ci_metrics_gate.py --base origin/dev \\
         --threshold 0.005 --markdown reports/metrics_diff.md
+    uv run python scripts/ci_metrics_gate.py --base HEAD \\
+        --targets reports/split_metrics.json --ignore '.*_size$'
+        # scheduled data-refresh mode: proportions only
 
 Exit code 0 = within tolerance, 1 = drift or unreadable baseline.
 
@@ -37,6 +40,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import re
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -82,6 +86,7 @@ class GateResult:
 
     rows: list[Row]
     errors: list[str] = field(default_factory=list)
+    ignored: int = 0
 
     @property
     def ok(self) -> bool:
@@ -135,6 +140,7 @@ def evaluate(
     threshold: float = DEFAULT_THRESHOLD,
     errors: Any = None,
     fail_on_new: bool = False,
+    ignore: re.Pattern[str] | str | None = None,
 ) -> GateResult:
     """Classify every metric in a ``dvc metrics diff --json`` payload.
 
@@ -148,7 +154,20 @@ def evaluate(
     drift, it is a missing baseline, so those rows are reported as ``NEW`` and
     pass by default; pass ``fail_on_new=True`` to require an explicit baseline
     instead. A key added to a file that *does* have a baseline stays a failure.
+
+    ``ignore`` excludes matching keys from comparison entirely -- they can
+    never fail the gate, however far they moved. A key matches when the regex
+    hits the metrics path or the flattened metric name (or both); a compiled
+    pattern or a regex string are both accepted. This is the refresh-mode
+    escape hatch: the scheduled retrain gate wants the *proportions* strict at
+    +/-0.005 while letting integer sizes/counts move (the point of new data),
+    so it passes something like ``.*_size$`` -- without which any real data
+    change would always fail, because at +/-0.005 counts must match exactly.
+    CI's own PR gate keeps calling ``evaluate`` without ``ignore`` and is
+    therefore unchanged.
     """
+    pattern = re.compile(ignore) if isinstance(ignore, str) else ignore
+    ignored = 0
     rows: list[Row] = []
     for path in sorted(diff):
         metrics = diff[path]
@@ -156,10 +175,15 @@ def evaluate(
             rows.append(Row(path, "", None, None, None, FAIL, REASON_MALFORMED))
             continue
         for metric in sorted(metrics):
+            if pattern is not None and (
+                pattern.search(path) is not None or pattern.search(metric) is not None
+            ):
+                ignored += 1
+                continue
             rows.append(classify(path, metric, metrics[metric], threshold))
 
     rows = _mark_new_files(rows, fail_on_new=fail_on_new)
-    return GateResult(rows=rows, errors=format_errors(errors))
+    return GateResult(rows=rows, errors=format_errors(errors), ignored=ignored)
 
 
 def _mark_new_files(rows: list[Row], fail_on_new: bool) -> list[Row]:
@@ -210,7 +234,10 @@ def _fmt(value: Any) -> str:
 
 
 def render_markdown(
-    result: GateResult, base: str = DEFAULT_BASE, workspace: str = "workspace"
+    result: GateResult,
+    base: str = DEFAULT_BASE,
+    workspace: str = "workspace",
+    ignore_desc: str | None = None,
 ) -> str:
     """Render the PR-comment body: one table plus a verdict line."""
     lines = [
@@ -222,6 +249,14 @@ def render_markdown(
         ),
         "",
     ]
+
+    if result.ignored:
+        lines.append(
+            f"Ignored {result.ignored} metric(s)"
+            + (f" matching `{ignore_desc}`" if ignore_desc else "")
+            + ": they are excluded from this comparison by design."
+        )
+        lines.append("")
 
     if result.errors:
         lines += [
@@ -310,15 +345,32 @@ def main() -> None:
         help="also fail when a metrics file has no baseline at the base revision",
     )
     parser.add_argument(
+        "--ignore",
+        action="append",
+        default=None,
+        help=(
+            "regex of keys to exclude from comparison entirely (repeatable). "
+            "Refresh runs pass e.g. '.*_size$' so integer sizes/counts may move "
+            "while proportions stay strict."
+        ),
+    )
+    parser.add_argument(
         "--markdown", default=None, help="also write the PR comment body here"
     )
     parser.add_argument("--json", action="store_true", help="print rows as JSON")
     args = parser.parse_args()
 
+    ignore = "|".join(args.ignore) if args.ignore else None
+    patterns = re.compile(ignore) if ignore else None
+
     diff, errors, repo = collect_diff(args.base, args.targets)
     try:
         result = evaluate(
-            diff, threshold=args.threshold, errors=errors, fail_on_new=args.fail_on_new
+            diff,
+            threshold=args.threshold,
+            errors=errors,
+            fail_on_new=args.fail_on_new,
+            ignore=patterns,
         )
     finally:
         # Drop the DVC repo before interpreter shutdown: dulwich's pack file
@@ -326,7 +378,9 @@ def main() -> None:
         del repo
         gc.collect()
 
-    markdown = render_markdown(result, base=args.base)
+    markdown = render_markdown(
+        result, base=args.base, ignore_desc=ignore if ignore else None
+    )
     if args.markdown:
         out = Path(args.markdown)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -339,6 +393,7 @@ def main() -> None:
                 {
                     "ok": result.ok,
                     "errors": result.errors,
+                    "ignored": result.ignored,
                     "rows": [vars(row) for row in result.rows],
                 },
                 indent=2,

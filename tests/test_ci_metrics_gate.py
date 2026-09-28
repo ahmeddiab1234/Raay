@@ -228,6 +228,81 @@ def test_classify_defaults_to_documented_threshold():
     assert row.reason == REASON_DRIFT
 
 
+def test_ignore_excludes_matching_keys_even_with_huge_delta():
+    diff = {
+        SPLIT_METRICS_FILE: {
+            "train_size": _change(25231, 80000),
+            "test_size": _change(7209, 22000),
+            "label_proportions.test.positive": _change(0.57595, 0.57605),
+        }
+    }
+    result = evaluate(diff, threshold=0.005, ignore=".*_size$")
+    assert result.ok
+    assert result.ignored == 2
+    assert [row.metric for row in result.rows] == ["label_proportions.test.positive"]
+
+
+def test_ignore_matches_against_the_metrics_path_too():
+    # `--ignore` must be able to drop an entire metrics file by its path.
+    diff = {METRICS_FILE: {"final_row_count": _change(36045, 1)}}
+    result = evaluate(diff, ignore=r"preprocess_metrics\.json")
+    assert result.ok
+    assert result.ignored == 1
+    assert result.rows == []
+
+
+def test_ignore_does_not_mask_unignored_violations():
+    diff = {
+        METRICS_FILE: {"final_row_count": _change(36045, 36040)},
+        SPLIT_METRICS_FILE: {
+            "train_size": _change(25231, 90000),
+            "label_proportions.test.positive": _change(0.57595, 0.55),
+        },
+    }
+    result = evaluate(diff, threshold=0.005, ignore=".*_size$")
+    assert not result.ok
+    assert result.ignored == 1
+    assert {row.metric for row in result.violations} == {
+        "final_row_count",
+        "label_proportions.test.positive",
+    }
+
+
+def test_ignore_accepts_a_compiled_pattern():
+    import re as _re
+
+    diff = {SPLIT_METRICS_FILE: {"val_size": _change(3605, 10000)}}
+    result = evaluate(diff, ignore=_re.compile(r".*_size$"))
+    assert result.ok
+    assert result.ignored == 1
+
+
+def test_ignore_still_counts_new_file_metrics_as_ignored():
+    # An added file whose keys are all ignored is not reported at all -- the
+    # refresh gate asked for those keys specifically, so a missing baseline is
+    # expected rather than a signal.
+    diff = {SPLIT_METRICS_FILE: {"test_size": {"old": None, "new": 7209}}}
+    result = evaluate(diff, ignore=".*_size$")
+    assert result.ok
+    assert result.ignored == 1
+    assert result.rows == []
+
+
+def test_markdown_notes_ignored_metrics():
+    diff = {SPLIT_METRICS_FILE: {"test_size": _change(7209, 8000)}}
+    markdown = render_markdown(
+        evaluate(diff, ignore=".*_size$"), ignore_desc=".*_size$"
+    )
+    assert "Ignored 1 metric(s) matching `.*_size$`" in markdown
+    assert "excluded from this comparison by design" in markdown
+
+
+def test_markdown_omits_ignore_note_when_nothing_ignored():
+    markdown = render_markdown(evaluate({}))
+    assert "Ignored 0" not in markdown
+    assert "Ignored" not in markdown
+
+
 def test_markdown_reports_status_and_reason_columns():
     diff = {METRICS_FILE: {"percentages_pre_norm.emoji": _change(10.5, 12.0)}}
     markdown = render_markdown(evaluate(diff), base="origin/dev")

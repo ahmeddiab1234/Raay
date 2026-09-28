@@ -510,9 +510,9 @@ def test_latency_is_measured_interleaved_with_the_order_swapped() -> None:
     # Three slots (candidate, production, control) rotating, so each takes each
     # position equally often: 1,2,2 then 2,2,1 then 2,1,2 then 1,2,2.
     assert cand.session.log == [1, 2, 2, 2, 2, 1, 2, 1, 2, 1, 2, 2]
-    assert (
-        cand.session.log.count(1) == 4
-    ), "the candidate is not measured once per round"
+    assert cand.session.log.count(1) == 4, (
+        "the candidate is not measured once per round"
+    )
 
 
 def _merged_order(cand, prod) -> list[int]:
@@ -1016,9 +1016,9 @@ def test_a_drifted_split_is_exit_two_with_no_report(repo: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert "does not match" in out
     assert "locked" in out
-    assert not (
-        repo / "reports" / "promotion_7.json"
-    ).exists(), "a report here would look like a verdict on the model"
+    assert not (repo / "reports" / "promotion_7.json").exists(), (
+        "a report here would look like a verdict on the model"
+    )
 
 
 def test_partial_evaluation_is_not_promotable_even_if_it_passes(

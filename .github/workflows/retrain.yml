@@ -1,0 +1,189 @@
+name: retrain-check
+
+# Step 6 -- scheduled/automated retraining hooks. A cron re-runs the data
+# pipeline on newly versioned raw data and enters the SAME gate CI uses
+# (scripts/ci_metrics_gate.py at +/-0.005), minus one deliberate difference:
+# integer sizes/counts are ignored (--ignore '.*_size$') because a refresh is
+# the point at which they SHOULD move -- the gate compares the label/dialect
+# proportions strictly instead. See the gate's --ignore docstring.
+
+on:
+  schedule:
+    # Weekly (Monday 04:12 UTC), offset from promote.yml's 06:17 weekly re-gate
+    # so the two schedules never contend for a runner.
+    - cron: "12 4 * * 1"
+  workflow_dispatch:
+  repository_dispatch:
+    # Seam for the future drift-alert producer (declared "later" in Step 6):
+    # the nightly PSI job can fire event_type `retrain` with an optional
+    # client_payload.threshold to tighten/loosen this run. Receiver only -- no
+    # producer exists in the repo yet.
+    types: [retrain]
+
+# GitHub schedules cron only from the DEFAULT branch (main), so this workflow
+# file lives on main but checks out `dev` below and operates there -- data
+# changes land on dev by PR, then reach main via the normal fast-forward.
+#
+# contents: write is needed to push the data-refresh branch; pull-requests:
+# write to open the PR on dev. This is the only write the workflow performs.
+permissions:
+  contents: write
+  pull-requests: write
+
+# A refresh either has already been fetched by a previous run (idempotent no-op)
+# or is mid-flight; never interleave two runs.
+concurrency:
+  group: retrain-data
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  # --frozen keeps the scheduled run from silently re-resolving uv.lock.
+  UV_FLAGS: "--frozen --all-extras"
+  DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+  DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+  # dvc repro's stages log to the shared raay_preprocessing experiment, same
+  # as CI.
+  MLFLOW_TRACKING_URI: https://dagshub.com/shhth0034/Raay.mlflow
+  MLFLOW_TRACKING_USERNAME: ${{ secrets.DAGSHUB_USER }}
+  MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
+  # A repository_dispatch can tighten/loosen the gate; schedule runs use 0.005.
+  REFRESH_THRESHOLD: ${{ github.event.client_payload.threshold || '0.005' }}
+
+jobs:
+  refresh:
+    name: re-split on new data and gate the proportions
+    runs-on: ubuntu-latest
+    steps:
+      # The metrics gate diffs against HEAD (the committed state on dev), so a
+      # shallow clone would have no baseline and fetch-depth 0 also fetches all
+      # remote refs (needed for the branch-exists idempotency check).
+      - name: Check out dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_FLAGS }}
+
+      - name: Write DVC credentials
+        # .dvc/config.local is git-ignored on purpose; the tracked
+        # .dvc/config only holds the remote URL. The token never reaches argv.
+        run: |
+          mkdir -p .dvc
+          cat > .dvc/config.local <<EOF
+          [core]
+              remote = dagshub
+          ['remote "dagshub"']
+              url = https://dagshub.com/shhth0034/Raay.dvc
+              user = ${DAGSHUB_USER}
+              password = ${DAGSHUB_TOKEN}
+          EOF
+
+      - name: Pull the raw input
+        # Only the raw CSV. Everything else is rebuilt by dvc repro below.
+        run: uv run ${{ env.UV_FLAGS }} dvc pull data/raw/Final_Data.csv.dvc
+
+      - name: Reproduce pipeline
+        run: uv run ${{ env.UV_FLAGS }} dvc repro
+
+      - name: Assert the pipeline is clean
+        # A dirty tree after repro is a pipeline/infra break, not a data
+        # refresh -- fail loudly rather than gate garbage.
+        run: |
+          status=$(uv run ${{ env.UV_FLAGS }} dvc status)
+          echo "$status"
+          if ! grep -q "up to date" <<<"$status"; then
+            echo "::error::DVC reported a dirty pipeline after repro -- that is" \
+              "not a plain data refresh."
+            exit 1
+          fi
+
+      - name: Early-exit when the raw data is unchanged
+        # dvc.lock embeds the raw input's md5, so "no new data" shows up as a
+        # clean lock after repro. Weekly no-op runs stop here, cheap.
+        run: |
+          if git diff --exit-code --quiet dvc.lock; then
+            echo "::notice::dvc.lock unchanged -- no new data since the last refresh."
+            exit 0
+          fi
+
+      - name: Set data-refresh date
+        id: stamp
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      # The "same gate" CI uses, with --ignore for integers: sizes/counts are
+      # the point of a refresh, so only label/dialect proportions are gated
+      # strictly at +/-0.005. new label/dialect keys are NOT ignored -- a new
+      # class is a structural change and fails like it should.
+      - name: Refresh gate (proportions only)
+        id: gate
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          date="${{ steps.stamp.outputs.date }}"
+          uv run ${{ env.UV_FLAGS }} python scripts/ci_metrics_gate.py \
+            --base HEAD \
+            --targets reports/split_metrics.json \
+            --ignore '.*_size$' \
+            --threshold "$REFRESH_THRESHOLD" \
+            --markdown "reports/data_refresh_$date.md" \
+            --json > "reports/data_refresh_$date.json"
+
+      - name: Upload the refresh report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-refresh-${{ steps.stamp.outputs.date }}
+          path: reports/data_refresh_*
+          if-no-files-found: ignore
+
+      - name: Open the data-refresh PR on dev
+        if: steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          date="${{ steps.stamp.outputs.date }}"
+          branch="retrain/data-$date"
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            echo "::notice::Data-refresh branch $branch already exists; nothing to do."
+            exit 0
+          fi
+          git checkout -b "$branch"
+          git add dvc.lock reports/preprocess_metrics.json reports/split_metrics.json
+          git -c user.name="raay-bot" \
+              -c user.email="actions@github.com" \
+              commit -m "data refresh $date: re-split on newly versioned raw data"
+          git push origin "$branch"
+          gh pr create --base dev --head "$branch" \
+            --title "Data refresh $date" \
+            --body-file "reports/data_refresh_$date.md"
+
+      - name: Fail on refresh drift
+        if: steps.gate.outcome == 'failure'
+        run: |
+          echo "::error::The refreshed split's label/dialect proportions drifted" \
+            "beyond the refresh gate. A retrain + re-register decision is needed;" \
+            "see the step summary and the uploaded report."
+          exit 1
+
+      - name: Summarise the refresh
+        if: always()
+        run: |
+          date="${{ steps.stamp.outputs.date }}"
+          reason="${{ github.event.client_payload.reason || 'schedule' }}"
+          {
+            echo "## Data refresh check ($date) -- triggered by $reason"
+            echo ""
+            echo '```'
+            cat "reports/data_refresh_$date.md" 2>/dev/null || echo "no new data to report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

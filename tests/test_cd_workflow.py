@@ -179,17 +179,17 @@ def test_bentofile_bakes_in_every_artifact_cd_pulls():
     included = set(bentofile["include"])
     for pointer in SERVING_ARTIFACTS:
         data_path = pointer[: -len(".dvc")]
-        assert (
-            data_path in included
-        ), f"CD pulls {data_path} but include does not list it"
+        assert data_path in included, (
+            f"CD pulls {data_path} but include does not list it"
+        )
     # The reverse direction: every model file in the image is DVC-acked, so a
     # fresh runner can always rebuild it.
     for path in included:
         if not path.startswith("models/"):
             continue
-        assert Path(
-            REPO / f"{path}.dvc"
-        ).exists(), f"{path} is baked in but not DVC-tracked"
+        assert Path(REPO / f"{path}.dvc").exists(), (
+            f"{path} is baked in but not DVC-tracked"
+        )
 
 
 def test_baked_image_does_not_depend_on_the_mlflow_registry():
@@ -544,6 +544,6 @@ def test_the_committed_known_hosts_file_is_either_empty_or_well_formed():
             "ssh-rsa",
             "ssh-ed25519",
         } or fields[1].startswith("ecdsa-sha2-"), f"unexpected key type: {line!r}"
-        assert fields[2].startswith(
-            ("AAAA", "AAAAB", "AAAAC")
-        ), f"not key material: {line!r}"
+        assert fields[2].startswith(("AAAA", "AAAAB", "AAAAC")), (
+            f"not key material: {line!r}"
+        )
