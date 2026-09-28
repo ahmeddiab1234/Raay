@@ -1,4 +1,5 @@
 commands_run_p*.txt
+commands_run_p5.txt
 .venv/
 __pycache__/
 mlruns/
