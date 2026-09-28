@@ -1,4 +1,15 @@
-<div align="center">
+# Raay راي
+
+**Arabic E-Commerce Product Review Sentiment Analysis**
+
+An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / Negative / Neutral) at scale — supporting Modern Standard Arabic and regional dialects (Egyptian, Gulf, Levantine).
+
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![uv](https://img.shields.io/badge/package%20manager-uv-blueviolet)](https://docs.astral.sh/uv/)
+[![Ruff](https://img.shields.io/badge/linter-ruff-orange)](https://docs.astral.sh/ruff/)
+[![MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2)](https://mlflow.org/)
+[![DVC](https://img.shields.io/badge/data%20versioning-DVC-945DD6)](https://dvc.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 
 ---
 
@@ -44,11 +55,11 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel                                      |
 | **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
 | **Canary Rollout**         | nginx 95/5 weighted split across two workers, health-gated registry promotion                                  |
-| **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with`Production` / `Canary` aliases                  |
+| **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases                  |
 | **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
 | **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
 | **Testing**                | pytest suite (96 unit tests, hermetic — no GPU, no network, no servers)                                       |
-| **Configuration**          | Hydra for training/distillation;`params.yaml` for the DVC data stages                                        |
+| **Configuration**          | Hydra for training/distillation; `params.yaml` for the DVC data stages                                        |
 | **Typed Schemas**          | Pydantic I/O models for the serving contract                                                                   |
 | **Structured Logging**     | Loguru for structured, leveled logging                                                                         |
 
@@ -62,7 +73,7 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | Package Manager      | [uv](https://docs.astral.sh/uv/)               |
 | Deep Learning        | PyTorch, HuggingFace Transformers, Accelerate |
 | Arabic Preprocessing | `arabert` (`ArabertPreprocessor`)         |
-| Experiment Tracking  | MLflow (local SQLite store,`mlflow.db`)     |
+| Experiment Tracking  | MLflow (local SQLite store, `mlflow.db`)     |
 | Data Versioning      | DVC (local / S3 remote)                       |
 | Inference Runtime    | ONNX Runtime (FP32 + dynamic INT8)            |
 | Model Serving        | BentoML + Docker Compose                      |
@@ -374,8 +385,8 @@ curl -s http://localhost:3000/predict \
 ```json
 {
   "predictions": [
-    {"label": "positive", "score": 0.98},
-    {"label": "negative", "score": 0.94}
+    {"label": "positive", "score": 0.9914},
+    {"label": "negative", "score": 0.9899}
   ]
 }
 ```
@@ -534,9 +545,9 @@ Stated plainly, because the numbers above are only useful with their caveats:
 | Variable                    | Description                                              | Default                                                                |
 | --------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `MLFLOW_TRACKING_URI`     | MLflow tracking store                                    | `sqlite:///mlflow.db` in `.env` (code fallback: `file:./mlruns`) |
-| `MLFLOW_ALLOW_FILE_STORE` | Required by MLflow ≥ 3 for`file:` URIs                | auto-set when the URI is`file:`                                      |
-| `RAAY_ONNX_PATH`          | Explicit ONNX graph override (skips registry resolution) | unset → resolves`models:/ArabicSentiment/Production`                |
-| `RAAY_TOKENIZER_DIR`      | Tokenizer +`id2label` source                           | `models/baseline/final`                                              |
+| `MLFLOW_ALLOW_FILE_STORE` | Required by MLflow ≥ 3 for `file:` URIs                | auto-set when the URI is `file:`                                      |
+| `RAAY_ONNX_PATH`          | Explicit ONNX graph override (skips registry resolution) | unset → resolves `models:/ArabicSentiment/Production`                |
+| `RAAY_TOKENIZER_DIR`      | Tokenizer + `id2label` source                           | `models/baseline/final`                                              |
 | `RAAY_MAX_LENGTH`         | Tokenizer truncation length                              | `128`                                                                |
 | `RAAY_MODEL_NAME`         | `ArabertPreprocessor` model                            | `aubmindlab/bert-base-arabertv02`                                    |
 | `RAAY_REGISTERED_MODEL`   | MLflow registered model name                             | `ArabicSentiment`                                                    |
@@ -549,7 +560,3 @@ Stated plainly, because the numbers above are only useful with their caveats:
 ## License
 
 This project is licensed under the MIT License.
-
----
-
-<div align="center">
