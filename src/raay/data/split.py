@@ -2,12 +2,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import pandas as pd
 import yaml
 from loguru import logger
 from sklearn.model_selection import train_test_split
 
-import mlflow
 from raay.config.env import load_environment
 from raay.data.dialect import add_dialect_column
 from raay.enums.constants import DefaultPaths, Experiments, SplitFileNames

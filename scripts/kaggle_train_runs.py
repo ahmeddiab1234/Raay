@@ -43,9 +43,9 @@ import sys
 from pathlib import Path
 from typing import cast
 
+import mlflow
 from loguru import logger
 
-import mlflow
 from raay.config.env import env_str, load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, EnvVar, Experiments, Models
 

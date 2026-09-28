@@ -33,6 +33,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -41,7 +42,6 @@ from loguru import logger
 from onnxruntime.quantization import QuantType, quantize_dynamic
 from transformers import AutoConfig, AutoTokenizer
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
 from raay.inference.export_onnx import _preprocess, _repair_artifact_locations

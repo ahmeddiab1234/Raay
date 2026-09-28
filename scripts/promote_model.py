@@ -971,6 +971,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_registry:
         try:
             import mlflow
+
             from raay.config.env import load_environment, mlflow_tracking_uri
 
             load_environment()

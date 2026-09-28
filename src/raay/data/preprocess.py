@@ -4,12 +4,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import pandas as pd
 import yaml
 from loguru import logger
 from rapidfuzz import fuzz, process
 
-import mlflow
 from raay.config.env import load_environment
 from raay.enums.constants import DefaultPaths, Experiments
 

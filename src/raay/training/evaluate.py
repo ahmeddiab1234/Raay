@@ -41,6 +41,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import mlflow
 import numpy as np
 import onnxruntime as ort
 import pandas as pd
@@ -54,7 +55,6 @@ from sklearn.metrics import (
 )
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.data.dialect import add_dialect_column
 from raay.enums.constants import DefaultPaths, Experiments, Models

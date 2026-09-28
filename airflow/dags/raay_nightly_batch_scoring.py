@@ -20,9 +20,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from airflow.operators.bash import BashOperator
-
 from airflow import DAG
+from airflow.operators.bash import BashOperator
 
 REPO = "/home/diab/Documents/Raay"
 

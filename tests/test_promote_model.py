@@ -1157,6 +1157,7 @@ def live_registry(monkeypatch):
     client attached, and no test attached one.
     """
     import mlflow
+
     from raay.config import env as raay_env
 
     registry = FakeRegistry(production="4")

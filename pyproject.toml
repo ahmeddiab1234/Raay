@@ -62,6 +62,13 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff]
+# Pin first-party sources to src/ only. Auto-detection also adds the project
+# root to `src`, so a stray git-ignored top-level dir named like a dependency
+# (historically `mlflow/`, 882 MB of `uv run mlflow ui` state) makes ruff
+# classify `import mlflow` as first-party and invert the isort order CI sees.
+src = ["src"]
+
 [tool.mypy]
 ignore_missing_imports = true
 

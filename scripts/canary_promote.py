@@ -58,11 +58,11 @@ from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 
+import mlflow
 import onnx
 import yaml
 from loguru import logger
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
 

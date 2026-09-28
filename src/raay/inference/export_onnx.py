@@ -45,6 +45,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import numpy as np
 import onnxruntime as ort
 import torch
@@ -52,7 +53,6 @@ import yaml
 from loguru import logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
 

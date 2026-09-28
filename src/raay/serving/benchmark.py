@@ -28,13 +28,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import numpy as np
 import onnxruntime as ort
 import pandas as pd
 from loguru import logger
 from transformers import AutoConfig, AutoTokenizer
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
 from raay.serving.serve import predict_probs

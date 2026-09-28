@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import hydra
+import mlflow
 import numpy as np
 import pandas as pd
 import torch
@@ -52,7 +53,6 @@ from transformers import (
     set_seed,
 )
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.data.dialect import add_dialect_column
 

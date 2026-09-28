@@ -32,11 +32,11 @@ import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 
+import mlflow
 import onnx
 import yaml
 from loguru import logger
 
-import mlflow
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments
 
