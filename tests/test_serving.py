@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import numpy as np
 import pytest
@@ -9,8 +10,10 @@ from transformers import BertConfig, BertForSequenceClassification
 from raay.inference.export_onnx import export_to_onnx
 from raay.serving.serve import (
     HealthRouteMiddleware,
+    PredictResponse,
     Validation422Middleware,
     _resolve_onnx_path,
+    model_version,
     predict_probs,
     softmax,
     svc,
@@ -33,10 +36,14 @@ def client():
         yield test_client
 
 
-def test_asgi_health_returns_200_without_redirect(client):
+def test_asgi_health_returns_200_without_redirect(client, monkeypatch):
+    monkeypatch.setenv("RAAY_MODEL_VERSION", "int8-687d587004c6")
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert response.json() == {
+        "status": "healthy",
+        "model_version": "int8-687d587004c6",
+    }
 
 
 @pytest.mark.parametrize(
@@ -62,7 +69,9 @@ def test_service_has_middlewares():
     assert Validation422Middleware in middlewares
 
 
-def test_health_middleware_returns_status_json():
+def test_health_middleware_returns_status_json(monkeypatch):
+    monkeypatch.delenv("RAAY_MODEL_VERSION", raising=False)
+
     async def _passthrough(_scope, _receive, _send):
         raise AssertionError("downstream app must not be reached for /health")
 
@@ -89,8 +98,49 @@ def test_health_middleware_returns_status_json():
     asyncio.run(middleware(scope, receive, send))
     assert messages[0]["type"] == "http.response.start"
     assert messages[0]["status"] == 200
-    body = b"".join(m["body"] for m in messages[1:])
-    assert body == b'{"status":"healthy"}'
+    body = json.loads(b"".join(m["body"] for m in messages[1:]))
+    assert body == {"status": "healthy", "model_version": "unversioned"}
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        pytest.param("int8-687d587004c6", "int8-687d587004c6", id="int8"),
+        pytest.param("int8-newvalue1234", "int8-newvalue1234", id="other"),
+        pytest.param("  spaced  ", "spaced", id="surrounding-whitespace"),
+        pytest.param("", "unversioned", id="empty"),
+        pytest.param("   ", "unversioned", id="whitespace-only"),
+    ],
+)
+def test_model_version_reads_env_at_call_time(monkeypatch, env_value, expected):
+    """Read per call, not at import, so a worker restart picks up the value.
+
+    A blank value falls back to the literal ``unversioned`` rather than
+    reporting an empty string that would read as a real, empty version.
+    """
+    monkeypatch.setenv("RAAY_MODEL_VERSION", env_value)
+    assert model_version() == expected
+
+
+def test_model_version_defaults_when_unset(monkeypatch):
+    monkeypatch.delenv("RAAY_MODEL_VERSION", raising=False)
+    assert model_version() == "unversioned"
+
+
+def test_predict_response_carries_model_version(monkeypatch):
+    """The response echoes the stamp, so a client needs no second call."""
+    monkeypatch.setenv("RAAY_MODEL_VERSION", "int8-687d587004c6")
+    response = PredictResponse(predictions=[])
+    assert response.model_version == "int8-687d587004c6"
+
+
+def test_predict_response_model_version_is_optional_field():
+    """Additive field: old clients ignoring it keep working, and an explicit
+    ``unversioned`` default keeps the schema stable if it is ever deserialized
+    from an older payload."""
+    dumped = PredictResponse(predictions=[]).model_dump()
+    assert "model_version" in dumped
+    assert PredictResponse.model_fields["model_version"].is_required() is False
 
 
 def _run_middleware(middleware_cls, body, status=400):

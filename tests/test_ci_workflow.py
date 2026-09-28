@@ -39,7 +39,12 @@ def test_workflow_is_valid_yaml_and_triggers_on_pull_request(workflow):
 
 
 def test_expected_jobs_exist(workflow):
-    assert set(workflow["jobs"]) == {"lint", "test", "pipeline"}
+    assert set(workflow["jobs"]) == {
+        "lint",
+        "test",
+        "pipeline",
+        "pipeline-fork-notice",
+    }
 
 
 def test_pipeline_job_waits_for_lint_and_test(workflow):
@@ -121,6 +126,42 @@ def test_pr_comment_is_skipped_on_forks(workflow):
         s for s in steps if s.get("name") == "Post the metrics report on the PR"
     )
     assert "head.repo.full_name == github.repository" in comment["if"]
+
+
+def test_dvc_pipeline_job_is_gated_off_forks(workflow):
+    """The whole secret-dependent job is skipped, not just the comment.
+
+    GitHub exposes no secrets to fork pull requests, so without a job-level
+    condition the DVC steps run with an empty DAGSHUB_TOKEN and fail mid-
+    pipeline on a confusing authentication error. The per-step `if` on the
+    comment alone does not protect them.
+    """
+    condition = workflow["jobs"]["pipeline"]["if"]
+    assert "head.repo.full_name == github.repository" in condition
+    assert "pull_request" in condition
+
+
+def test_fork_notice_job_explains_the_skip(workflow):
+    job = workflow["jobs"]["pipeline-fork-notice"]
+    assert job["needs"] == ["lint", "test"]
+    assert "head.repo.full_name != github.repository" in job["if"]
+    commands = _run_commands(workflow, "pipeline-fork-notice")
+    assert "DAGSHUB_TOKEN" in commands
+    # The notice must not claim the gate passed; the gate never ran.
+    assert "DAGSHUB_TOKEN" in commands and "lint and test" in commands
+
+
+def test_fork_jobs_are_mutually_exclusive(workflow):
+    """Exactly one of the two pipeline jobs may run for a given event."""
+    pipeline = workflow["jobs"]["pipeline"]["if"]
+    notice = workflow["jobs"]["pipeline-fork-notice"]["if"]
+    assert "head.repo.full_name == github.repository" in pipeline
+    assert "head.repo.full_name != github.repository" in notice
+
+
+def test_fork_notice_job_needs_no_write_permissions(workflow):
+    # A skipped-pipeline notice is a log line, never a PR comment.
+    assert "permissions" not in workflow["jobs"]["pipeline-fork-notice"]
 
 
 def test_lock_reproducibility_check_runs_last(workflow):

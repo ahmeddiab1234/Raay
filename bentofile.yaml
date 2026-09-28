@@ -8,6 +8,11 @@ description: |
 labels:
   stage: production
   variant: onnx-int8
+  # NOTE: these are BentoML bento labels. They are NOT emitted as OCI image
+  # labels by this BentoML version (the generated Dockerfile template has no
+  # LABEL instruction), so the model version reaches the image through
+  # `bentoml containerize --label` in .github/workflows/cd.yml, which forwards
+  # to the OCI builder directly.
 
 include:
   - "src/raay/**"
@@ -19,6 +24,25 @@ include:
 envs:
   - name: "PYTHONPATH"
     value: "/home/bentoml/bento/src"
+  # BENTOML_ENV_<name> below is emitted by BentoML as `ARG <name>=<default>`
+  # followed by `ENV <name>=$<name>` in the generated Dockerfile, so a plain
+  # local `bentoml build`/`containerize` keeps the placeholder while CI
+  # overrides it with
+  # `bentoml containerize --build-arg RAAY_MODEL_VERSION=int8-<dvc-md5[:12]>`.
+  # serve.py reports it as `model_version` on /predict and /health, which is
+  # what makes a response traceable to the exact graph bytes in the image.
+  - name: "RAAY_MODEL_VERSION"
+    value: "unversioned"
+  # The image bakes its own graph, so it must not fall back to serve.py's default
+  # of the MLflow registry alias: the container carries no registry (and the
+  # Dagshub store is not reachable from a released image), so /predict would
+  # 500 with "Registered Model with name=ArabicSentiment not found". These
+  # point at the bytes under `include` above, which is what makes the image
+  # self-contained. The canary worker overrides them via compose.
+  - name: "RAAY_ONNX_PATH"
+    value: "/home/bentoml/bento/src/models/onnx/model_int8.onnx"
+  - name: "RAAY_TOKENIZER_DIR"
+    value: "/home/bentoml/bento/src/models/baseline/final"
 
 python:
   is_src_layout: true

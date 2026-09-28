@@ -108,8 +108,16 @@ docs/pr*.md
 # Mypy cache
 .mypy_cache/
 
-# Training artifacts (regenerated on Kaggle/GPU or via DVC; never commit)
-models/baseline/
+# Training artifacts (regenerated on Kaggle/GPU or via DVC; never commit).
+# models/baseline/ cannot stay a blanket directory rule: git will not descend
+# into an excluded directory, so the DVC pointer files for the three small
+# serving files (config/tokenizer/tokenizer_config, ~1.8 MB total, needed to
+# build the serving image) would be un-committable and CD could never pull
+# them. Re-include the dir, exclude its contents, then re-include the pointers.
+models/baseline/*
+!models/baseline/final/
+models/baseline/final/*
+!models/baseline/final/*.dvc
 models/distilled/
 outputs/
 reports/mlflow_comparison.png

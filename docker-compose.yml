@@ -1,6 +1,15 @@
+# RAAY_IMAGE defaults to the locally built image. A release deploy should pin
+# the immutable tag that .github/workflows/cd.yml published, never `latest`:
+#
+#   RAAY_IMAGE=ghcr.io/ahmeddiab1234/arabic-sentiment:<commit-sha> \
+#     docker compose pull raay-sentiment && docker compose up -d --no-build
+#
+# `--no-build` matters: these services carry a `build:` block for local image
+# work, so without it compose rebuilds the repo image instead of using the
+# pulled one.
 services:
   raay-sentiment:
-    image: raay-sentiment:latest
+    image: ${RAAY_IMAGE:-raay-sentiment:latest}
     build:
       context: .
     ports:
@@ -26,7 +35,7 @@ services:
   # read-only over the baked int8). No host port -- nginx reaches it by
   # compose service name on the private network.
   raay-sentiment-canary:
-    image: raay-sentiment:latest
+    image: ${RAAY_IMAGE:-raay-sentiment:latest}
     environment:
       RAAY_ONNX_PATH: /home/bentoml/bento/src/models/onnx/distilled.onnx
       RAAY_TOKENIZER_DIR: /home/bentoml/bento/src/models/distilled/final

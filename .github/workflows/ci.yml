@@ -87,6 +87,13 @@ jobs:
     name: DVC pipeline & metrics gate
     runs-on: ubuntu-latest
     needs: [lint, test]
+    # Every step below needs DAGSHUB_TOKEN, which GitHub does not expose to
+    # forks. The condition is on the job (not per step) so the secret-dependent
+    # steps cannot run with an empty token and fail confusingly mid-pipeline;
+    # `pipeline-fork-notice` below reports the skip instead.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     # The PR comment is the only write this workflow performs.
     permissions:
       contents: read
@@ -195,15 +202,6 @@ jobs:
           fi
           cml comment create reports/metrics_diff.md
 
-      - name: Explain the skipped pipeline on forks
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.fork
-        run: |
-          echo "::notice::Pull request is from a fork: the DVC and MLflow steps" \
-            "were skipped because DAGSHUB_TOKEN is not available there. The lint" \
-            "and test jobs still ran."
-
       - name: Fail on metrics drift
         if: steps.gate.outcome == 'failure'
         run: |
@@ -220,3 +218,19 @@ jobs:
             git diff dvc.lock
             exit 1
           fi
+
+  pipeline-fork-notice:
+    name: DVC pipeline skipped (fork PR)
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    steps:
+      - name: Explain the skipped pipeline
+        run: |
+          echo "::notice::Pull request is from a fork, so the DVC and MLflow steps" \
+            "were skipped: DAGSHUB_TOKEN is not available to fork pull requests." \
+            "The lint and test jobs still ran, and the metrics gate cannot" \
+            "evaluate this PR -- a maintainer has to re-run it from a branch of" \
+            "this repository."

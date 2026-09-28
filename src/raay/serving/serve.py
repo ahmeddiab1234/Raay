@@ -29,6 +29,12 @@ label map from the fine-tuned tokenizer dir. The ONNX source is env-tunable:
     RAAY_TOKENIZER_DIR       checkpoint dir for tokenizer + id2label (default models/baseline/final)
     RAAY_MAX_LENGTH          tokenizer truncation length (default 128)
     RAAY_MODEL_NAME          ArabertPreprocessor model name (default aubmindlab/bert-base-arabertv02)
+    RAAY_MODEL_VERSION       provenance stamp reported as ``model_version`` on
+                             /predict and /health (default "unversioned"). CI
+                             bakes it in via
+                             ``bentoml containerize --build-arg`` and repeats it
+                             as an OCI label, so a response can be traced back
+                             to the exact graph bytes in the image.
 
 The predict/softmax machinery is module-level so the benchmark
 (``raay.serving.benchmark``) and unit tests reuse it without a BentoML
@@ -49,7 +55,7 @@ import numpy as np
 import onnxruntime as ort
 from bentoml import Service, api
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 from transformers import AutoConfig, AutoTokenizer
 
@@ -67,7 +73,22 @@ _DEFAULT_TOKENIZER_DIR = DefaultPaths.BASELINE_MODEL.value
 _DEFAULT_REGISTERED_MODEL = Models.REGISTERED_BASELINE.value
 _DEFAULT_ALIAS = "Production"
 _DEFAULT_MAX_LENGTH = 128
+# Reported when nothing stamped a provenance value. Never guess a version here:
+# "unversioned" is a visible gap in traceability, a wrong value is a silent lie.
+_DEFAULT_MODEL_VERSION = "unversioned"
 _BATCH_SIZE = 32
+
+
+def model_version() -> str:
+    """The provenance stamp for the graph this worker is serving.
+
+    Read per call rather than cached at import so a restarted worker, the
+    in-process tests, and ``RAAY_MODEL_VERSION`` overridden at container start
+    all report the same value.
+    """
+    value = os.environ.get("RAAY_MODEL_VERSION", "").strip()
+    return value or _DEFAULT_MODEL_VERSION
+
 
 # arabert instantiation is expensive (pulls in pyarabic); cache one processor
 # per model name so every ``/predict`` call only pays for ``preprocess``.
@@ -189,6 +210,9 @@ class Prediction(BaseModel):
 
 class PredictResponse(BaseModel):
     predictions: list[Prediction]
+    # Echoes RAAY_MODEL_VERSION so a client can tie a response to the exact
+    # graph baked into the image, without a second call.
+    model_version: str = Field(default_factory=model_version)
 
 
 class RaaySV:
@@ -244,12 +268,16 @@ class RaaySV:
 
 
 class HealthRouteMiddleware:
-    """Serve ``GET /health`` as a top-level route returning ``{"status": "healthy"}``.
+    """Serve ``GET /health`` as a top-level route returning the liveness body.
 
     BentoML only lets us mount ASGI apps at a prefix, and a Starlette ``Mount``
     307-redirects the bare prefix to a trailing slash (``/health`` ->
     ``/health/``); a middleware short-circuits the exact path instead, so the
     Docker ``HEALTHCHECK`` and ``curl`` both see a plain 200 on ``/health``.
+
+    The body also carries ``model_version``: this is the route an orchestrator
+    and an operator hit first, so it is the cheapest place to answer "which
+    graph is this container actually serving?".
     """
 
     def __init__(self, app: Any) -> None:
@@ -257,7 +285,9 @@ class HealthRouteMiddleware:
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") == "http" and scope.get("path") == "/health":
-            response = JSONResponse({"status": "healthy"})
+            response = JSONResponse(
+                {"status": "healthy", "model_version": model_version()}
+            )
             await response(scope, receive, send)
             return
         await self.app(scope, receive, send)

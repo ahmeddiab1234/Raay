@@ -1,0 +1,284 @@
+name: CD
+
+# Release pipeline. Triggers only on main, which is a fast-forward of dev: every
+# commit published here already passed the full CI (lint + test + DVC repro +
+# metrics gate) as part of the pull request that landed it. This workflow
+# therefore does not re-run the DVC pipeline or the metrics gate -- it only
+# turns a commit into an immutable, traceable, pullable image.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a release that is already publishing: a half-pushed image is
+# worse than a slightly stale one.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_FLAGS: "--frozen --all-extras"
+  DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+  DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+  IMAGE: ghcr.io/${{ github.repository_owner }}/arabic-sentiment
+  MODEL_DVC: models/onnx/model_int8.onnx.dvc
+
+jobs:
+  lint:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_FLAGS }}
+
+      - name: Ruff lint
+        run: uv run ${{ env.UV_FLAGS }} ruff check .
+
+      - name: Ruff format
+        run: uv run ${{ env.UV_FLAGS }} ruff format --check .
+
+      - name: Mypy
+        run: uv run ${{ env.UV_FLAGS }} mypy src
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_FLAGS }}
+
+      - name: Pytest
+        run: uv run ${{ env.UV_FLAGS }} pytest -q
+
+  docker-build:
+    name: Build, verify & publish image
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    permissions:
+      contents: read
+      # Only the publish step needs this, and only to push to GHCR.
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        # BentoML is a project dependency, so `uv sync` is what makes the
+        # `bentoml build` / `bentoml containerize` commands below available.
+        run: uv sync ${{ env.UV_FLAGS }}
+
+      - name: Configure DVC remote credentials
+        # .dvc/config.local is git-ignored on purpose: the tracked .dvc/config
+        # only holds the remote URL.
+        run: |
+          mkdir -p .dvc
+          cat > .dvc/config.local <<EOF
+          [core]
+              remote = dagshub
+          ['remote "dagshub"']
+              url = https://dagshub.com/shhth0034/Raay.dvc
+              user = ${DAGSHUB_USER}
+              password = ${DAGSHUB_TOKEN}
+          EOF
+
+      - name: Derive the model version from the DVC pointer
+        id: model
+        # The version is the DVC hash of the exact graph bytes, not a hand-kept
+        # counter, so it cannot drift from what actually ships. 12 hex chars is
+        # the same convention the benchmark/registry notes already use.
+        run: |
+          set -euo pipefail
+          pointer="${{ env.MODEL_DVC }}"
+          if [ ! -f "$pointer" ]; then
+            echo "::error::$pointer is missing; the model is not tracked by DVC."
+            exit 1
+          fi
+          # Key-anchored parse: the pointer is YAML ("- md5: <hash>"), so a
+          # plain `awk '{print $2}'` would yield the literal "md5:" because the
+          # leading "-" is a field of its own. Split on the colon instead.
+          md5=$(awk -F': *' '/^[[:space:]]*-?[[:space:]]*md5:/ {print $2; exit}' "$pointer")
+          size=$(awk -F': *' '/^[[:space:]]*size:/ {print $2; exit}' "$pointer")
+          if [ -z "$md5" ] || [ -z "$size" ] || [ ${#md5} -ne 32 ]; then
+            echo "::error::Could not parse a 32-char md5 and a size out of $pointer."
+            exit 1
+          fi
+          version="int8-${md5:0:12}"
+          echo "model_version=${version}" >> "$GITHUB_OUTPUT"
+          echo "md5=${md5}" >> "$GITHUB_OUTPUT"
+          echo "size=${size}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Model provenance"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| model version | \`${version}\` |"
+            echo "| ONNX md5 | \`${md5}\` |"
+            echo "| ONNX bytes | ${size} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull the serving artifacts
+        # Only the four files the image bakes in: the graph and the three small
+        # tokenizer/config files. The 212 MB training CSV is deliberately not
+        # fetched -- nothing in the image is built from it.
+        run: |
+          set -euo pipefail
+          uv run ${{ env.UV_FLAGS }} dvc pull \
+            "${{ env.MODEL_DVC }}" \
+            models/baseline/final/config.json.dvc \
+            models/baseline/final/tokenizer.json.dvc \
+            models/baseline/final/tokenizer_config.json.dvc
+
+      - name: Verify the pulled graph against the pointer
+        # Belt and braces: DVC already checks this on checkout, but a silent
+        # swap here would ship a "versioned" image serving different bytes.
+        run: |
+          set -euo pipefail
+          actual_md5=$(md5sum models/onnx/model_int8.onnx | awk '{print $1}')
+          actual_size=$(stat -c %s models/onnx/model_int8.onnx)
+          if [ "$actual_md5" != "${{ steps.model.outputs.md5 }}" ]; then
+            echo "::error::md5 mismatch: pointer=${{ steps.model.outputs.md5 }} file=$actual_md5"
+            exit 1
+          fi
+          if [ "$actual_size" != "${{ steps.model.outputs.size }}" ]; then
+            echo "::error::size mismatch: pointer=${{ steps.model.outputs.size }} file=$actual_size"
+            exit 1
+          fi
+          echo "Graph matches the pointer ($actual_md5, $actual_size bytes)."
+
+      - name: Build the bento
+        # Runs from the repo root: bentofile.yaml includes models/**, so the
+        # freshly pulled artifacts are the ones that get baked in.
+        run: uv run ${{ env.UV_FLAGS }} bentoml build -f bentofile.yaml
+
+      - name: Containerize with the version baked in
+        id: build
+        env:
+          SHA: ${{ github.sha }}
+          MODEL_VERSION: ${{ steps.model.outputs.model_version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MODEL_VERSION:-}" ]; then
+            echo "::error::MODEL_VERSION was not derived; refusing to build an unlabelled image."
+            exit 1
+          fi
+          echo "MODEL_VERSION=${MODEL_VERSION}" >> "$GITHUB_OUTPUT"
+          uv run ${{ env.UV_FLAGS }} bentoml containerize raay-sentiment:latest \
+            --image-tag "${{ env.IMAGE }}:${SHA}" \
+            --image-tag "${{ env.IMAGE }}:latest" \
+            --build-arg "RAAY_MODEL_VERSION=${MODEL_VERSION}" \
+            --label "org.opencontainers.image.revision=${SHA}" \
+            --label "org.opencontainers.image.version=${MODEL_VERSION}" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}"
+
+      - name: Assert the version reached the image
+        # bentofile labels are BentoML bento labels and do NOT become OCI
+        # labels in this version, so the value is carried twice on purpose:
+        # once as an OCI label (readable with `docker inspect`) and once as the
+        # RAAY_MODEL_VERSION env the service reports on /health and /predict.
+        env:
+          SHA: ${{ github.sha }}
+          MODEL_VERSION: ${{ steps.model.outputs.model_version }}
+        run: |
+          set -euo pipefail
+          revision=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${{ env.IMAGE }}:${SHA}")
+          version=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${{ env.IMAGE }}:${SHA}")
+          runtime=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${{ env.IMAGE }}:${SHA}" | sed -n 's/^RAAY_MODEL_VERSION=//p')
+          [ "$revision" = "${SHA}" ] || { echo "::error::revision label is '$revision', expected ${SHA}"; exit 1; }
+          [ "$version" = "${MODEL_VERSION}" ] || { echo "::error::version label is '$version', expected ${MODEL_VERSION}"; exit 1; }
+          [ "$runtime" = "${MODEL_VERSION}" ] || { echo "::error::RAAY_MODEL_VERSION is '$runtime', expected ${MODEL_VERSION}"; exit 1; }
+          echo "Labels and runtime env both report ${MODEL_VERSION}."
+
+      - name: Smoke test the image
+        env:
+          MODEL_VERSION: ${{ steps.model.outputs.model_version }}
+        run: |
+          set -euo pipefail
+          container=$(docker run -d -p 3000:3000 "${{ env.IMAGE }}:${{ github.sha }}")
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+
+          echo "Waiting for the service to accept requests (ORT session + tokenizer load)..."
+          health=""
+          for _ in $(seq 1 60); do
+            if health=$(curl -fsS http://localhost:3000/health 2>/dev/null); then
+              break
+            fi
+            if ! docker inspect -f '{{.State.Running}}' "$container" | grep -q true; then
+              echo "::error::The container exited during startup:"
+              docker logs "$container"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ -z "$health" ]; then
+            echo "::error::The service never became healthy within 120s:"
+            docker logs "$container"
+            exit 1
+          fi
+          echo "GET /health -> ${health}"
+
+          echo "${health}" | grep -q '"status":"healthy"' || {
+            echo "::error::Unexpected health body: ${health}"; exit 1; }
+          echo "${health}" | grep -q "\"model_version\":\"${MODEL_VERSION}\"" || {
+            echo "::error::/health did not report ${MODEL_VERSION}: ${health}"; exit 1; }
+
+          predict=$(curl -fsS http://localhost:3000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"texts": ["المنتج ممتاز", "الطلبية وصلت متأخرة جدا"]}')
+          echo "POST /predict -> ${predict}"
+          echo "${predict}" | grep -q "\"model_version\":\"${MODEL_VERSION}\"" || {
+            echo "::error::/predict did not report ${MODEL_VERSION}: ${predict}"; exit 1; }
+          if [ "$(echo "${predict}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["predictions"]))')" != "2" ]; then
+            echo "::error::/predict did not return 2 predictions: ${predict}"; exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the immutable and floating tags
+        # The SHA tag is the deployable artifact; `latest` is only a convenience
+        # pointer. Nothing deploys from `latest` on its own.
+        run: |
+          set -euo pipefail
+          docker push "${{ env.IMAGE }}:${{ github.sha }}"
+          docker push "${{ env.IMAGE }}:latest"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${{ env.IMAGE }}:${{ github.sha }}")
+          echo "Published $digest"
+          {
+            echo ""
+            echo "### Published image"
+            echo ""
+            echo "| tag | reference |"
+            echo "| --- | --- |"
+            echo "| immutable | \`${{ env.IMAGE }}:${{ github.sha }}\` |"
+            echo "| floating | \`${{ env.IMAGE }}:latest\` |"
+            echo "| digest | \`${digest}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
