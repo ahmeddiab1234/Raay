@@ -1,20 +1,5 @@
 <div align="center">
 
-# Raay راي
-
-**Arabic E-Commerce Product Review Sentiment Analysis**
-
-An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / Negative / Neutral) at scale — supporting Modern Standard Arabic and regional dialects (Egyptian, Gulf, Levantine).
-
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
-[![uv](https://img.shields.io/badge/package%20manager-uv-blueviolet)](https://docs.astral.sh/uv/)
-[![Ruff](https://img.shields.io/badge/linter-ruff-orange)](https://docs.astral.sh/ruff/)
-[![MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2)](https://mlflow.org/)
-[![DVC](https://img.shields.io/badge/data%20versioning-DVC-945DD6)](https://dvc.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
-
-</div>
-
 ---
 
 ## Table of Contents
@@ -24,13 +9,13 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 - [Tech Stack](#tech-stack)
 - [Project Architecture](#project-architecture)
 - [Datasets](#datasets)
-- [Installation & Usage](#installation--usage)
+- [Installation &amp; Usage](#installation--usage)
 - [Data Pipeline](#data-pipeline)
 - [Phase 3: Modeling Baseline](#phase-3-modeling-baseline)
-- [Phase 4: Compression & Optimization](#phase-4-compression--optimization)
-- [Phase 5: Serving & Operations](#phase-5-serving--operations)
+- [Phase 4: Compression &amp; Optimization](#phase-4-compression--optimization)
+- [Phase 5: Serving &amp; Operations](#phase-5-serving--operations)
 - [Testing](#testing)
-- [Limitations & Honest Findings](#limitations--honest-findings)
+- [Limitations &amp; Honest Findings](#limitations--honest-findings)
 - [Environment Variables](#environment-variables)
 - [License](#license)
 
@@ -48,50 +33,50 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 
 ## Features
 
-| Category | Details |
-|---|---|
-| **3-Class Sentiment** | Positive · Negative · Neutral classification with confidence scores |
-| **Arabic NLP** | MSA + dialect support (Egyptian, Gulf, Levantine, Maghrebi, Arabizi/franco-arabe) with per-row dialect tagging |
-| **Transformer-based** | AraBERT v2 backbone with HuggingFace Transformers & Accelerate |
-| **Model Optimization** | Knowledge distillation (6-layer student), ONNX export, dynamic INT8 quantization |
-| **Real-Time Serving** | BentoML REST API (`/predict`, `/health`), containerized via Docker Compose |
-| **Near-Real-Time Scoring** | Client-side Redis micro-batch consumer (drain-by-size *or* drain-by-time) |
-| **Batch Scoring & Drift** | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel |
-| **Orchestration** | Airflow DAG (daily 03:00 UTC) driving input → score → drift |
-| **Canary Rollout** | nginx 95/5 weighted split across two workers, health-gated registry promotion |
-| **Experiment Tracking** | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases |
-| **Data Versioning** | DVC-tracked raw/interim/processed data with a configurable remote (local / S3) |
-| **Code Quality** | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push) |
-| **Testing** | pytest suite (96 unit tests, hermetic — no GPU, no network, no servers) |
-| **Configuration** | Hydra for training/distillation; `params.yaml` for the DVC data stages |
-| **Typed Schemas** | Pydantic I/O models for the serving contract |
-| **Structured Logging** | Loguru for structured, leveled logging |
+| Category                         | Details                                                                                                        |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **3-Class Sentiment**      | Positive · Negative · Neutral classification with confidence scores                                          |
+| **Arabic NLP**             | MSA + dialect support (Egyptian, Gulf, Levantine, Maghrebi, Arabizi/franco-arabe) with per-row dialect tagging |
+| **Transformer-based**      | AraBERT v2 backbone with HuggingFace Transformers & Accelerate                                                 |
+| **Model Optimization**     | Knowledge distillation (6-layer student), ONNX export, dynamic INT8 quantization                               |
+| **Real-Time Serving**      | BentoML REST API (`/predict`, `/health`), containerized via Docker Compose                                 |
+| **Near-Real-Time Scoring** | Client-side Redis micro-batch consumer (drain-by-size*or* drain-by-time)                                     |
+| **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel                                      |
+| **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
+| **Canary Rollout**         | nginx 95/5 weighted split across two workers, health-gated registry promotion                                  |
+| **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with`Production` / `Canary` aliases                  |
+| **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
+| **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
+| **Testing**                | pytest suite (96 unit tests, hermetic — no GPU, no network, no servers)                                       |
+| **Configuration**          | Hydra for training/distillation;`params.yaml` for the DVC data stages                                        |
+| **Typed Schemas**          | Pydantic I/O models for the serving contract                                                                   |
+| **Structured Logging**     | Loguru for structured, leveled logging                                                                         |
 
 ---
 
 ## Tech Stack
 
-| Layer | Tool |
-|---|---|
-| Language | Python 3.12+ |
-| Package Manager | [uv](https://docs.astral.sh/uv/) |
-| Deep Learning | PyTorch, HuggingFace Transformers, Accelerate |
-| Arabic Preprocessing | `arabert` (`ArabertPreprocessor`) |
-| Experiment Tracking | MLflow (local SQLite store, `mlflow.db`) |
-| Data Versioning | DVC (local / S3 remote) |
-| Inference Runtime | ONNX Runtime (FP32 + dynamic INT8) |
-| Model Serving | BentoML + Docker Compose |
-| Load Testing | Locust (HTTP before/after) |
-| Streaming / Queue | Redis (`redis:7-alpine`) |
-| Drift Monitoring | Evidently (PSI) |
-| Orchestration | Apache Airflow 2.10.5 (host-isolated) |
-| Traffic Shifting | nginx (weighted upstream) |
-| Config Management | Hydra (`configs/`) + `params.yaml` |
-| Data Validation | Pydantic |
-| Linting & Formatting | Ruff |
-| Type Checking | mypy |
-| Testing | pytest |
-| Logging | Loguru |
+| Layer                | Tool                                          |
+| -------------------- | --------------------------------------------- |
+| Language             | Python 3.12+                                  |
+| Package Manager      | [uv](https://docs.astral.sh/uv/)               |
+| Deep Learning        | PyTorch, HuggingFace Transformers, Accelerate |
+| Arabic Preprocessing | `arabert` (`ArabertPreprocessor`)         |
+| Experiment Tracking  | MLflow (local SQLite store,`mlflow.db`)     |
+| Data Versioning      | DVC (local / S3 remote)                       |
+| Inference Runtime    | ONNX Runtime (FP32 + dynamic INT8)            |
+| Model Serving        | BentoML + Docker Compose                      |
+| Load Testing         | Locust (HTTP before/after)                    |
+| Streaming / Queue    | Redis (`redis:7-alpine`)                    |
+| Drift Monitoring     | Evidently (PSI)                               |
+| Orchestration        | Apache Airflow 2.10.5 (host-isolated)         |
+| Traffic Shifting     | nginx (weighted upstream)                     |
+| Config Management    | Hydra (`configs/`) + `params.yaml`        |
+| Data Validation      | Pydantic                                      |
+| Linting & Formatting | Ruff                                          |
+| Type Checking        | mypy                                          |
+| Testing              | pytest                                        |
+| Logging              | Loguru                                        |
 
 ---
 
@@ -142,18 +127,18 @@ raay/
 
 ## Datasets
 
-| Dataset | Size | Role |
-|---|---|---|
-| **[Arabic Customer Reviews (`Final_Data.csv`)](https://www.kaggle.com/datasets/mohamedramadan2040/arabic-customer-reviews)** | ~40 k rows (4.4 MB) | **Primary** — drives the DVC pipeline, all training, and every reported metric |
-| **[330K Arabic Sentiment Reviews (`arabic_sentiment_reviews.csv`)](https://www.kaggle.com/datasets/abdallaellaithy/330k-arabic-sentiment-reviews)** | 330 k rows (212 MB) | Secondary corpus for EDA / pretraining exploration (binary-labeled) |
+| Dataset                                                                                                                                                    | Size                | Role                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------- |
+| **[Arabic Customer Reviews (`Final_Data.csv`)](https://www.kaggle.com/datasets/mohamedramadan2040/arabic-customer-reviews)**                        | ~40 k rows (4.4 MB) | **Primary** — drives the DVC pipeline, all training, and every reported metric |
+| **[330K Arabic Sentiment Reviews (`arabic_sentiment_reviews.csv`)](https://www.kaggle.com/datasets/abdallaellaithy/330k-arabic-sentiment-reviews)** | 330 k rows (212 MB) | Secondary corpus for EDA / pretraining exploration (binary-labeled)                   |
 
 Preprocessing on the primary set (`reports/preprocess_metrics.json`): 40 046 raw rows → **36 045** clean rows (1 939 exact + 2 062 near-duplicates removed, 5 952 near-empty flagged), then a label- **and** dialect-stratified split locked by `split.random_state` in `params.yaml`:
 
-| Split | Rows | positive | negative | neutral |
-|---|---:|---:|---:|---:|
-| `train` | 25 231 | 14 533 | 9 419 | 1 279 |
-| `val` | 3 605 | 2 076 | 1 346 | 183 |
-| `test` | 7 209 | 4 152 | 2 691 | 366 |
+| Split     |   Rows | positive | negative | neutral |
+| --------- | -----: | -------: | -------: | ------: |
+| `train` | 25 231 |   14 533 |    9 419 |   1 279 |
+| `val`   |  3 605 |    2 076 |    1 346 |     183 |
+| `test`  |  7 209 |    4 152 |    2 691 |     366 |
 
 ---
 
@@ -249,10 +234,10 @@ A DVC pipeline (`dvc.yaml`) turns the raw dataset into reproducible, dialect-tag
 uv run dvc repro             # preprocess → split
 ```
 
-| Stage | Command | Outputs |
-|---|---|---|
-| `preprocess` | `python -m raay.data.preprocess` | `data/interim/normalized.csv`, `reports/preprocess_metrics.json` |
-| `split` | `python -m raay.data.split` | `data/processed/{train,val,test}.csv` (+ `dialect`, `dialect_confidence`) |
+| Stage          | Command                            | Outputs                                                                         |
+| -------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| `preprocess` | `python -m raay.data.preprocess` | `data/interim/normalized.csv`, `reports/preprocess_metrics.json`            |
+| `split`      | `python -m raay.data.split`      | `data/processed/{train,val,test}.csv` (+ `dialect`, `dialect_confidence`) |
 
 ---
 
@@ -275,32 +260,32 @@ uv run python -m raay.training.evaluate \
 
 ### Results (`reports/eval_baseline.json`)
 
-| Metric | Value |
-|---|---|
-| Accuracy | **84.92 %** |
-| F1 (macro) | **0.6407** |
-| F1 (weighted) | 0.8414 |
+| Metric        | Value             |
+| ------------- | ----------------- |
+| Accuracy      | **84.92 %** |
+| F1 (macro)    | **0.6407**  |
+| F1 (weighted) | 0.8414            |
 
 **Per-class**
 
-| Class | Precision | Recall | F1 | Support |
-|---|---|---|---|---:|
-| Positive | 0.880 | 0.909 | **0.895** | 4 152 |
-| Negative | 0.846 | 0.853 | **0.850** | 2 691 |
-| Neutral | 0.245 | 0.139 | **0.178** | 366 |
+| Class    | Precision | Recall | F1              | Support |
+| -------- | --------- | ------ | --------------- | ------: |
+| Positive | 0.880     | 0.909  | **0.895** |   4 152 |
+| Negative | 0.846     | 0.853  | **0.850** |   2 691 |
+| Neutral  | 0.245     | 0.139  | **0.178** |     366 |
 
 > **Neutral underperforms** because it is only ~5 % of the test set — the dominant remaining error mode.
 
 **Dialect breakdown**
 
-| Dialect | n | Accuracy | F1 macro |
-|---|---:|---:|---:|
-| MSA | 3 322 | 85.7 % | 0.605 |
-| Gulf | 1 145 | 86.2 % | 0.682 |
-| Egyptian | 1 011 | 82.4 % | 0.647 |
-| Levantine | 1 129 | 82.4 % | 0.631 |
-| Maghrebi | 357 | 92.2 % | 0.668 |
-| Arabizi | 245 | 80.0 % | 0.538 |
+| Dialect   |     n | Accuracy | F1 macro |
+| --------- | ----: | -------: | -------: |
+| MSA       | 3 322 |   85.7 % |    0.605 |
+| Gulf      | 1 145 |   86.2 % |    0.682 |
+| Egyptian  | 1 011 |   82.4 % |    0.647 |
+| Levantine | 1 129 |   82.4 % |    0.631 |
+| Maghrebi  |   357 |   92.2 % |    0.668 |
+| Arabizi   |   245 |   80.0 % |    0.538 |
 
 ---
 
@@ -317,11 +302,11 @@ uv run python scripts/kaggle_train_runs.py --module distill --n 6
 uv run python -m raay.training.distill alpha=0.4 temperature=4.0   # Hydra overrides
 ```
 
-| Metric | Teacher (baseline) | Student (distilled) |
-|---|---:|---:|
-| Accuracy | 84.92 % | 83.04 % |
-| F1 (macro) | 0.6407 | 0.5975 |
-| Size | 542.6 MB | 372.5 MB |
+| Metric     | Teacher (baseline) | Student (distilled) |
+| ---------- | -----------------: | ------------------: |
+| Accuracy   |            84.92 % |             83.04 % |
+| F1 (macro) |             0.6407 |              0.5975 |
+| Size       |           542.6 MB |            372.5 MB |
 
 ### 4.2 ONNX Export & INT8 Quantization
 
@@ -345,12 +330,12 @@ Parity: FP32 graphs match PyTorch logits (`max_abs_diff ≈ 3.5e-06`, argmax ide
 uv run python scripts/benchmark.py            # regenerates reports/benchmark_table.{md,csv}
 ```
 
-| Variant | Backend | Accuracy | F1 (macro) | Size | batch-1 p50 | batch-1 p95 |
-|---|---|---:|---:|---:|---:|---:|
-| `baseline-torch` | PyTorch CPU FP32 | 84.92 % | 0.6407 | 542.6 MB | 31.2 ms | 69.4 ms |
-| `distilled-torch` | PyTorch CPU FP32 | 83.04 % | 0.5975 | 372.5 MB | 22.2 ms | 45.8 ms |
-| `onnx-fp32` | ORT CPU FP32 | 84.92 % | 0.6407 | 540.9 MB | 19.0 ms | 43.0 ms |
-| **`onnx-int8`** | **ORT CPU INT8** | **85.03 %** | 0.6369 | **136.1 MB** | **9.5 ms** | **27.6 ms** |
+| Variant                 | Backend                |          Accuracy | F1 (macro) |               Size |      batch-1 p50 |       batch-1 p95 |
+| ----------------------- | ---------------------- | ----------------: | ---------: | -----------------: | ---------------: | ----------------: |
+| `baseline-torch`      | PyTorch CPU FP32       |           84.92 % |     0.6407 |           542.6 MB |          31.2 ms |           69.4 ms |
+| `distilled-torch`     | PyTorch CPU FP32       |           83.04 % |     0.5975 |           372.5 MB |          22.2 ms |           45.8 ms |
+| `onnx-fp32`           | ORT CPU FP32           |           84.92 % |     0.6407 |           540.9 MB |          19.0 ms |           43.0 ms |
+| **`onnx-int8`** | **ORT CPU INT8** | **85.03 %** |     0.6369 | **136.1 MB** | **9.5 ms** | **27.6 ms** |
 
 INT8 is **4× smaller** (541 MB → 136 MB) and **2× faster at p50** than the FP32 graph (19.0 → 9.5 ms; 1.6× at p95), while *gaining* 0.11 pp accuracy — quantization noise, not a real improvement. `onnx-fp32` accuracy is inherited from `baseline-torch` — identical weights.
 
@@ -362,11 +347,11 @@ uv run python scripts/log_variants_mlflow.py       # --winner onnx-int8
 
 Each variant is logged as its own `raay_training` run (`stage=baseline|distilled|fp32|int8`) with accuracy, F1, latency, and size metrics, then the winner is registered and promoted.
 
-| Version | Variant | Stage | Alias |
-|---|---|---|---|
-| `v5` | `distilled-fp32` (canary graph) | Production | `Production`, `Canary` |
-| `v4` | `onnx-int8` | Archived | — |
-| `v1` | baseline transformers | Archived | — |
+| Version | Variant                           | Stage      | Alias                      |
+| ------- | --------------------------------- | ---------- | -------------------------- |
+| `v5`  | `distilled-fp32` (canary graph) | Production | `Production`, `Canary` |
+| `v4`  | `onnx-int8`                     | Archived   | —                         |
+| `v1`  | baseline transformers             | Archived   | —                         |
 
 > Both the production INT8 graph and the canary distilled-FP32 graph live under the **same** registered model (`ArabicSentiment`); the alias is the promotion switch, not the graph source. The BentoML service resolves `models:/ArabicSentiment/Production` at worker start; `RAAY_ONNX_PATH` overrides it.
 
@@ -389,8 +374,8 @@ curl -s http://localhost:3000/predict \
 ```json
 {
   "predictions": [
-    {"label": "positive", "score": 0.9914},
-    {"label": "negative", "score": 0.9899}
+    {"label": "positive", "score": 0.98},
+    {"label": "negative", "score": 0.94}
   ]
 }
 ```
@@ -411,10 +396,10 @@ uv run python scripts/locust_run.py --users 8 --run-time 60
 
 **Locust** (8 users, 60 s, 3-review calls, 0 failures, `reports/locust_*_stats.csv`):
 
-| Variant | Requests | Median | p95 | p99 | Failures |
-|---|---:|---:|---:|---:|---:|
-| FP32 ONNX | 347 | 78 ms | 160 ms | 270 ms | 0 |
-| **INT8 ONNX** | 364 | **54 ms** | **120 ms** | **160 ms** | 0 |
+| Variant             | Requests |          Median |              p95 |              p99 | Failures |
+| ------------------- | -------: | --------------: | ---------------: | ---------------: | -------: |
+| FP32 ONNX           |      347 |           78 ms |           160 ms |           270 ms |        0 |
+| **INT8 ONNX** |      364 | **54 ms** | **120 ms** | **160 ms** |        0 |
 
 > **TensorRT** is retained as a future accelerator path. An engine must be built on the fixed production GPU / CUDA / TensorRT environment — never ahead of it.
 
@@ -456,12 +441,12 @@ uv run python -m raay.inference.batch_score --mode score     --date 2026-09-24
 uv run python -m raay.inference.batch_score --mode drift    --date 2026-09-24
 ```
 
-| Mode | Reads | Writes |
-|---|---|---|
-| `init-reference` | `data/processed/test.csv` | `data/scoring/reference/reference.csv` (fixed seed) |
-| `make-input` | `data/processed/test.csv` | `data/scoring/input/{date}.csv` (seed = CRC32 of the date → idempotent) |
-| `score` | the day's input | `data/scoring/output/{date}.csv` (3-class probs + `predicted_label` / `predicted_score`) |
-| `drift` | reference vs. the day's output | `reports/drift/{date}.json` |
+| Mode               | Reads                          | Writes                                                                                         |
+| ------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `init-reference` | `data/processed/test.csv`    | `data/scoring/reference/reference.csv` (fixed seed)                                          |
+| `make-input`     | `data/processed/test.csv`    | `data/scoring/input/{date}.csv` (seed = CRC32 of the date → idempotent)                     |
+| `score`          | the day's input                | `data/scoring/output/{date}.csv` (3-class probs + `predicted_label` / `predicted_score`) |
+| `drift`          | reference vs. the day's output | `reports/drift/{date}.json`                                                                  |
 
 The drift gate is **Evidently PSI** on `predicted_label` + `positive`: `< 0.1` PASS, `< 0.2` WARN, `≥ 0.2` FAIL (overall = worst column). Every mode logs to the `raay_batch` MLflow experiment.
 
@@ -492,10 +477,10 @@ The DAG `airflow/dags/raay_nightly_batch_scoring.py` runs daily at **03:00 UTC**
 
 An additive nginx front on `:8081` splitting **95/5** across two compose workers:
 
-| Worker | Graph | Registry alias | Host port |
-|---|---|---|---|
-| `raay-sentiment` | INT8 (production) | `Production` | `8000` |
-| `raay-sentiment-canary` | distilled FP32 | `Canary` | none (nginx reaches it by service name) |
+| Worker                    | Graph             | Registry alias | Host port                               |
+| ------------------------- | ----------------- | -------------- | --------------------------------------- |
+| `raay-sentiment`        | INT8 (production) | `Production` | `8000`                                |
+| `raay-sentiment-canary` | distilled FP32    | `Canary`     | none (nginx reaches it by service name) |
 
 ```bash
 uv run python scripts/canary_promote.py --mode declare    # register the canary graph (idempotent)
@@ -514,17 +499,17 @@ Both variants live under the **same** registered model; the canary worker binds 
 
 96 hermetic unit tests — no GPU, no network, no running servers:
 
-| Suite | Tests | Covers |
-|---|---:|---|
-| `tests/test_batch_consumer.py` | 20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer |
-| `tests/test_batch_score.py` | 14 | Input sampling, scoring, PSI drift verdicts |
-| `tests/test_canary_nginx.py` | 14 | nginx config parse + canary promote/rollback against a fake MLflow client |
-| `tests/test_serving.py` | 13 | BentoML service, health middleware, 422 validation |
-| `tests/test_export_onnx.py` | 9 | Export parity helpers |
-| `tests/test_preprocess.py` | 9 | Normalization, dedup, near-empty flagging |
-| `tests/test_dialect.py` | 7 | Dialect heuristics + confidence |
-| `tests/test_distill.py` | 7 | Distillation loss / config wiring |
-| `tests/test_quantize_onnx.py` | 3 | Quantization + parity report |
+| Suite                            | Tests | Covers                                                                    |
+| -------------------------------- | ----: | ------------------------------------------------------------------------- |
+| `tests/test_batch_consumer.py` |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer              |
+| `tests/test_batch_score.py`    |    14 | Input sampling, scoring, PSI drift verdicts                               |
+| `tests/test_canary_nginx.py`   |    14 | nginx config parse + canary promote/rollback against a fake MLflow client |
+| `tests/test_serving.py`        |    13 | BentoML service, health middleware, 422 validation                        |
+| `tests/test_export_onnx.py`    |     9 | Export parity helpers                                                     |
+| `tests/test_preprocess.py`     |     9 | Normalization, dedup, near-empty flagging                                 |
+| `tests/test_dialect.py`        |     7 | Dialect heuristics + confidence                                           |
+| `tests/test_distill.py`        |     7 | Distillation loss / config wiring                                         |
+| `tests/test_quantize_onnx.py`  |     3 | Quantization + parity report                                              |
 
 ```bash
 uv run pytest
@@ -540,25 +525,24 @@ Stated plainly, because the numbers above are only useful with their caveats:
 - **The canary latency signal is not real.** Both workers share 2 cores, so the 5 % slice's latency sawtooth is CPU contention. The behavioral gate is the nightly PSI drift job, not nginx latency.
 - **INT8 "gaining" accuracy is noise.** 85.03 % vs 84.92 % is within quantization noise on 7 209 samples; the honest claim is "no meaningful quality loss at 4× compression".
 - **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one.
-- **No CI.** `.github/workflows/` is empty; quality gates are pre-commit hooks plus the documented local command.
 - **No local GPU.** Training and distillation run on Kaggle; local work is CPU-only inference.
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `MLFLOW_TRACKING_URI` | MLflow tracking store | `sqlite:///mlflow.db` in `.env` (code fallback: `file:./mlruns`) |
-| `MLFLOW_ALLOW_FILE_STORE` | Required by MLflow ≥ 3 for `file:` URIs | auto-set when the URI is `file:` |
-| `RAAY_ONNX_PATH` | Explicit ONNX graph override (skips registry resolution) | unset → resolves `models:/ArabicSentiment/Production` |
-| `RAAY_TOKENIZER_DIR` | Tokenizer + `id2label` source | `models/baseline/final` |
-| `RAAY_MAX_LENGTH` | Tokenizer truncation length | `128` |
-| `RAAY_MODEL_NAME` | `ArabertPreprocessor` model | `aubmindlab/bert-base-arabertv02` |
-| `RAAY_REGISTERED_MODEL` | MLflow registered model name | `ArabicSentiment` |
-| `RAAY_ALIAS` | Registry alias resolved at worker start | `Production` |
-| `DATA_ROOT` | Kaggle snapshot dir holding the processed splits | — |
-| `KAGGLE_TEACHER_DIR` | Kaggle teacher checkpoint dir (distillation) | — |
+| Variable                    | Description                                              | Default                                                                |
+| --------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `MLFLOW_TRACKING_URI`     | MLflow tracking store                                    | `sqlite:///mlflow.db` in `.env` (code fallback: `file:./mlruns`) |
+| `MLFLOW_ALLOW_FILE_STORE` | Required by MLflow ≥ 3 for`file:` URIs                | auto-set when the URI is`file:`                                      |
+| `RAAY_ONNX_PATH`          | Explicit ONNX graph override (skips registry resolution) | unset → resolves`models:/ArabicSentiment/Production`                |
+| `RAAY_TOKENIZER_DIR`      | Tokenizer +`id2label` source                           | `models/baseline/final`                                              |
+| `RAAY_MAX_LENGTH`         | Tokenizer truncation length                              | `128`                                                                |
+| `RAAY_MODEL_NAME`         | `ArabertPreprocessor` model                            | `aubmindlab/bert-base-arabertv02`                                    |
+| `RAAY_REGISTERED_MODEL`   | MLflow registered model name                             | `ArabicSentiment`                                                    |
+| `RAAY_ALIAS`              | Registry alias resolved at worker start                  | `Production`                                                         |
+| `DATA_ROOT`               | Kaggle snapshot dir holding the processed splits         | —                                                                     |
+| `KAGGLE_TEACHER_DIR`      | Kaggle teacher checkpoint dir (distillation)             | —                                                                     |
 
 ---
 
@@ -569,7 +553,3 @@ This project is licensed under the MIT License.
 ---
 
 <div align="center">
-
-**Raay راي** — Giving every Arabic review a voice.
-
-</div>
