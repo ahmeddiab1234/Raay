@@ -1,0 +1,435 @@
+"""Structural tests for ``.github/workflows/promote.yml``.
+
+The promotion workflow is the only thing that can move the ``Production`` alias,
+and it runs unattended on a schedule as well as on demand. Nothing imports it,
+so these tests pin the properties the safety argument rests on: the evaluating
+job physically cannot promote, the promoting job cannot start without a human,
+the two are separated by exactly one ``needs`` edge, and no trigger can be
+reached from a fork.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[1]
+WORKFLOW = REPO / ".github" / "workflows" / "promote.yml"
+RESOLVER = REPO / ".github" / "actions" / "resolve-candidate" / "action.yml"
+
+# What the gate job must pull to be able to score anything. The test split has
+# no DVC pointer of its own -- it is an output of the `split` stage -- so a
+# workflow that pulls a bare file, or only `preprocess`, silently ends up with
+# no data and a gate that cannot run.
+REQUIRED_PULLS = (
+    "dvc pull split",
+    "dvc pull models/baseline/final/config.json.dvc",
+    "dvc pull models/baseline/final/tokenizer.json.dvc",
+    "dvc pull models/baseline/final/tokenizer_config.json.dvc",
+)
+
+
+@pytest.fixture(scope="module")
+def workflow():
+    return yaml.safe_load(WORKFLOW.read_text())
+
+
+def _triggers(workflow):
+    # PyYAML resolves the bare `on:` key to the boolean True.
+    return workflow[True] if True in workflow else workflow["on"]
+
+
+def _steps(workflow, job):
+    return workflow["jobs"][job]["steps"]
+
+
+def _runs(workflow, job):
+    return "\n".join(s["run"] for s in _steps(workflow, job) if "run" in s)
+
+
+def _commands(workflow, job):
+    """The run scripts with comments and blank lines removed.
+
+    Several steps explain *why* a flag is absent, so a plain substring search
+    over the raw YAML matches the prose rather than the behaviour.
+    """
+    out = []
+    for script in _runs(workflow, job).splitlines():
+        line = script.strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return "\n".join(out)
+
+
+def test_workflow_is_valid_yaml(workflow):
+    assert set(workflow["jobs"]) == {"gate", "promote"}
+
+
+def test_no_fork_reachable_trigger(workflow):
+    """A PR-triggered promotion would run with a stranger's DVC token.
+
+    There is no pull_request and no push trigger at all: the workflow runs only
+    when a maintainer dispatches it or on the weekly schedule.
+    """
+    triggers = _triggers(workflow)
+    assert set(triggers) == {"workflow_dispatch", "schedule"}
+    assert "pull_request" not in triggers
+    assert "push" not in triggers
+
+
+def test_schedule_is_weekly(workflow):
+    assert _triggers(workflow)["schedule"] == [{"cron": "17 6 * * 1"}]
+
+
+def test_promote_needs_the_gate_and_nothing_else(workflow):
+    """One edge, in one direction: evaluation strictly before promotion."""
+    assert workflow["jobs"]["promote"]["needs"] == "gate"
+    assert "needs" not in workflow["jobs"]["gate"]
+
+
+def test_promotion_requires_a_human(workflow):
+    """The approval gate is a GitHub Environment, not a comment in the YAML."""
+    assert workflow["jobs"]["promote"]["environment"] == {"name": "production"}
+
+
+def test_a_running_promotion_is_never_cancelled(workflow):
+    """Half-moved alias plus a killed job is worse than a stale alias."""
+    assert workflow["concurrency"] == {
+        "group": "promote-production",
+        "cancel-in-progress": False,
+    }
+
+
+def test_gate_job_cannot_promote(workflow):
+    """The evaluating job passes --dry-run and nothing that could override it."""
+    runs = _commands(workflow, "gate")
+    assert "--dry-run" in runs
+    assert "--skip-registry" not in runs, (
+        "the gate must still register the Candidate alias so the version is "
+        "inspectable before a human approves it"
+    )
+    # A second, un-flagged invocation would promote behind the human's back.
+    assert (
+        runs.count("scripts/promote_model.py") == 1
+    ), "a second invocation could promote"
+
+
+def test_promote_job_is_the_one_that_moves_the_alias(workflow):
+    runs = _commands(workflow, "promote")
+    assert "scripts/promote_model.py" in runs
+    assert "--dry-run" not in runs, "the promote job must not pass --dry-run"
+
+
+def test_promote_job_re_measures_before_promoting(workflow):
+    """An approval covers the numbers a human read, so they must still hold."""
+    runs = _runs(workflow, "promote")
+    assert "--candidate-version" in runs
+    assert "models/onnx/model_int8.onnx" in runs
+
+
+def test_both_jobs_resolve_the_graph_on_their_own_runner(workflow):
+    """A path from one job's filesystem is meaningless in the next.
+
+    The gate and promote jobs run on separate runners. If the promote job read
+    the candidate path from a job output, it would be handed a path into a
+    machine that no longer exists -- and it would fail at the moment of
+    promotion, after the human had already approved. Each job resolves its own
+    copy, through one shared definition so the two cannot drift apart.
+    """
+    for job in ("gate", "promote"):
+        steps = [s for s in _steps(workflow, job) if "uses" in s]
+        assert any(
+            s["uses"] == "./.github/actions/resolve-candidate" for s in steps
+        ), f"{job} does not resolve the candidate graph itself"
+
+
+def test_no_filesystem_path_crosses_the_job_boundary(workflow):
+    """Job outputs are scalars; a resolved path is not."""
+    outputs = workflow["jobs"]["gate"].get("outputs", {})
+    text = yaml.safe_dump(outputs)
+    assert (
+        "candidate_onnx" not in text
+    ), "the gate job must not export a path from its own filesystem"
+    assert outputs["candidate_version"] == (
+        "${{ steps.inputs.outputs.version }}"
+    ), "only the version may cross the boundary"
+
+
+def test_the_promote_job_gates_the_version_a_human_approved(workflow):
+    """The version is pinned to the gate job; the path is re-resolved locally.
+
+    Re-resolving the *version* independently in both jobs would be a second bug:
+    on a scheduled run with no explicit version, the gate job reads the
+    Production alias, and if anything promoted in between, the promote job
+    would gate a different model than the one that was approved.
+    """
+    uses = [s for s in _steps(workflow, "promote") if "uses" in s]
+    resolver = next(
+        s for s in uses if s["uses"] == "./.github/actions/resolve-candidate"
+    )
+    assert resolver["with"]["version"] == "${{ needs.gate.outputs.candidate_version }}"
+    assert "needs.gate.outputs.candidate_onnx" not in yaml.safe_dump(workflow)
+
+
+def test_the_shared_resolver_is_valid_yaml_and_refuses_external_weights():
+    resolver = yaml.safe_load(RESOLVER.read_text())
+    assert resolver["runs"]["using"] == "composite"
+    assert set(resolver["outputs"]) == {"version", "onnx"}
+    script = yaml.safe_dump(resolver)
+    assert (
+        ".onnx.data" in script
+    ), "a graph with an external sidecar must be refused, not gated as one file"
+    assert "download_artifacts" in script
+
+
+def test_both_jobs_pull_the_split_and_tokenizer(workflow):
+    for job in ("gate", "promote"):
+        runs = _runs(workflow, job)
+        for pull in REQUIRED_PULLS:
+            assert pull in runs, f"{job} is missing `{pull}`"
+
+
+def test_both_jobs_check_out_with_full_history(workflow):
+    for job in ("gate", "promote"):
+        checkout = next(
+            s for s in _steps(workflow, job) if "checkout" in s.get("uses", "")
+        )
+        assert int(checkout["with"]["fetch-depth"]) == 0
+
+
+def test_dvc_credentials_are_written_privately(workflow):
+    for job in ("gate", "promote"):
+        runs = _runs(workflow, job)
+        assert "umask 077" in runs
+        assert ".dvc/config.local" in runs
+
+
+def test_the_token_is_never_echoed(workflow):
+    """It goes into a 0600 file, never onto a log or the step summary."""
+    for job in ("gate", "promote"):
+        for step in _steps(workflow, job):
+            script = step.get("run", "")
+            for line in script.splitlines():
+                stripped = line.strip()
+                if "DAGSHUB_TOKEN" in stripped:
+                    assert (
+                        stripped.startswith("printf") or '$DAGSHUB_TOKEN"' in stripped
+                    ), f"{job}: {stripped!r} would print the token"
+    summary_steps = [
+        s
+        for job in ("gate", "promote")
+        for s in _steps(workflow, job)
+        if "GITHUB_STEP_SUMMARY" in s.get("run", "")
+    ]
+    assert summary_steps
+    for step in summary_steps:
+        assert "TOKEN" not in step["run"]
+
+
+def test_secrets_come_from_the_secret_store(workflow):
+    raw = WORKFLOW.read_text()
+    assert "${{ secrets.DAGSHUB_USER }}" in raw
+    assert "${{ secrets.DAGSHUB_TOKEN }}" in raw
+    # A literal credential in a committed workflow is the failure this catches.
+    assert "dagshub.com/shhth0034" in raw
+    for line in raw.splitlines():
+        if "dagshub.com" in line and "%s" not in line and "url: https://" not in line:
+            assert "@" not in line, f"possible inline credential: {line.strip()!r}"
+
+
+def test_permissions_are_least_privilege(workflow):
+    """Registry access comes from Dagshub tokens, not from a GITHUB_TOKEN."""
+    assert workflow["permissions"] == {"contents": "read"}
+
+
+def test_the_decision_artifact_is_always_uploaded(workflow):
+    upload = next(
+        s for s in _steps(workflow, "gate") if "upload-artifact" in s.get("uses", "")
+    )
+    assert upload["if"] == "always()"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert "promotion_*.json" in upload["with"]["path"]
+
+
+def test_a_rejected_decision_fails_the_job(workflow):
+    """Exit 1 from the script is the CI failure; a 'rejected' string is not."""
+    runs = _runs(workflow, "gate")
+    assert "promotion_*.json" in runs
+    assert '"rejected"' in runs
+    assert "exit 1" in runs
+
+
+def test_floor_tolerance_default_matches_the_script(workflow):
+    """Two places declare the floor tolerance; they must not drift apart."""
+    dispatch = _triggers(workflow)["workflow_dispatch"]["inputs"]
+    assert dispatch["floor_tolerance"]["default"] == "0.01"
+    # The value is threaded through the step env, so check the whole job.
+    assert "0.01" in yaml.safe_dump(workflow["jobs"]["gate"])
+    assert "--floor-tolerance" in _commands(workflow, "gate")
+    script = (REPO / "scripts" / "promote_model.py").read_text()
+    assert "floor_tolerance: float = 0.01" in script
+
+
+def test_candidate_version_is_required_on_dispatch(workflow):
+    dispatch = _triggers(workflow)["workflow_dispatch"]["inputs"]
+    assert dispatch["candidate_version"]["required"] is True
+
+
+def _resolver_program() -> str:
+    """The python program embedded in the resolver's heredoc.
+
+    Extracted rather than reimplemented, so the test exercises the script that
+    actually runs. A substring assertion on the source only proves the words
+    are present -- the message naming ``.onnx.data`` is in the source whether or
+    not the guard is wired up.
+    """
+    resolver = yaml.safe_load(RESOLVER.read_text())
+    script = "\n".join(s["run"] for s in resolver["runs"]["steps"] if "run" in s)
+    # The marker carries a redirect ("<<'PY' >> \"$GITHUB_OUTPUT\""), so split
+    # on it and then drop the remainder of that line.
+    _, _, rest = script.partition("<<'PY'")
+    body = rest.split("\n", 1)[1]
+    body = body.rsplit("\nPY", 1)[0]
+    return textwrap.dedent(body)
+
+
+def _run_resolver_program(
+    tmp_path: Path, artifact_dir: Path
+) -> subprocess.CompletedProcess:
+    """Execute the resolver's program against a stubbed MLflow.
+
+    No registry, no network: the stub returns a local directory so the real
+    logic -- the glob, the sidecar refusal, the emitted output line -- runs
+    unchanged against a graph we control.
+    """
+    stub = tmp_path / "stubs"
+    (stub / "raay" / "config").mkdir(parents=True)
+    (stub / "raay" / "__init__.py").write_text("")
+    (stub / "raay" / "config" / "__init__.py").write_text("")
+    (stub / "raay" / "config" / "env.py").write_text(
+        "def load_environment():\n    pass\n"
+    )
+    (stub / "mlflow.py").write_text(
+        "import os\n"
+        "class artifacts:\n"
+        f"    @staticmethod\n"
+        f"    def download_artifacts(uri):\n        return {str(artifact_dir)!r}\n"
+        "def __getattr__(name):\n    raise AttributeError(name)\n"
+    )
+    program = tmp_path / "resolver.py"
+    program.write_text(_resolver_program())
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(stub),
+        "MODEL_NAME": "ArabicSentiment",
+    }
+    return subprocess.run(
+        [sys.executable, str(program), "7"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_the_resolver_emits_a_path_for_a_self_contained_graph(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "model.onnx").write_bytes(b"")
+    result = _run_resolver_program(tmp_path, artifacts)
+    assert result.returncode == 0, result.stderr
+    assert "onnx=" in result.stdout
+    assert "model.onnx" in result.stdout
+
+
+def test_a_version_with_several_graphs_is_refused(tmp_path: Path) -> None:
+    """Two graphs in one version is ambiguous, so the resolver must not choose.
+
+    Picking the first would be a silent coin flip about which model actually
+    gets gated, and the report would name only the version. The sidecar refusal
+    below exists for the same reason: a graph that is not what will be served
+    must be refused rather than measured.
+    """
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "b.onnx").write_bytes(b"")
+    (artifacts / "a.onnx").write_bytes(b"")
+    result = _run_resolver_program(tmp_path, artifacts)
+    assert result.returncode != 0
+    assert "several graphs" in result.stderr
+    assert "a.onnx" in result.stderr and "b.onnx" in result.stderr
+    assert "onnx=" not in result.stdout, "it emitted a path it had just refused"
+
+
+def test_a_graph_with_external_weights_is_refused(tmp_path: Path) -> None:
+    """The distilled graph needs its .onnx.data alongside it.
+
+    Gating the .onnx without the sidecar would load a graph with missing
+    initializers: ORT may still open the file and produce numbers, which is the
+    worst outcome for a gate. The resolver has to refuse rather than measure
+    garbage, and that behaviour is checked here by running the resolver.
+    """
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "distilled.onnx").write_bytes(b"")
+    (artifacts / "distilled.onnx.data").write_bytes(b"")
+    result = _run_resolver_program(tmp_path, artifacts)
+    assert result.returncode != 0
+    assert "external weights" in result.stderr
+    assert "onnx=" not in result.stdout, "it emitted a path it had just refused"
+
+
+def test_a_missing_graph_is_an_error_not_an_empty_path(tmp_path: Path) -> None:
+    """No graph in the artifacts must fail loudly, not gate a blank path."""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = _run_resolver_program(tmp_path, artifacts)
+    assert result.returncode != 0
+    assert "no .onnx graph" in result.stderr
+    assert "onnx=" not in result.stdout
+
+
+def test_the_shared_resolver_passes_shellcheck():
+    """The resolver's bash gets the same bar as the workflow's.
+
+    Moving the step into a composite action takes it out of actionlint's
+    reach, so without this the script would be the one piece of shell in the
+    promotion path that nothing checks.
+    """
+    if shutil.which("shellcheck") is None:
+        pytest.skip("shellcheck is not installed")
+    resolver = yaml.safe_load(RESOLVER.read_text())
+    scripts = [s["run"] for s in resolver["runs"]["steps"] if "run" in s]
+    assert scripts, "the resolver has no shell to check"
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, script in enumerate(scripts):
+            path = Path(tmp) / f"resolve{index}.sh"
+            path.write_text("#!/bin/bash\nset -euo pipefail\n" + script)
+            result = subprocess.run(
+                ["shellcheck", "-S", "warning", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout
+
+
+def test_workflow_passes_actionlint():
+    """Catches expression/shell problems the YAML parser cannot see."""
+    binary = os.environ.get("ACTIONLINT_BIN")
+    if binary is None:
+        pytest.skip("actionlint is not installed")
+    # actionlint 1.7.7 parses anything handed to it as a workflow, so it
+    # cannot check a composite action (verified against a minimal one: it
+    # reports the missing `on:` and `jobs:`). The action's bash is checked by
+    # shellcheck below instead; its YAML by the structural tests.
+    result = subprocess.run(
+        [binary, str(WORKFLOW)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

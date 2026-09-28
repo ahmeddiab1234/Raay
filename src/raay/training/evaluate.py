@@ -80,9 +80,23 @@ def load_model(model_dir: str):
     return model, tokenizer, id2label
 
 
-def load_onnx_session(onnx_path: str) -> ort.InferenceSession:
-    """Load an exported ONNX model for evaluation (frontends an ORT session)."""
-    return ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+def load_onnx_session(
+    onnx_path: str, *, session_options: ort.SessionOptions | None = None
+) -> ort.InferenceSession:
+    """Load an exported ONNX model for evaluation (frontends an ORT session).
+
+    ``session_options`` is optional and defaults to None, i.e. exactly the
+    previous behaviour for every existing caller. The promotion gate passes
+    tuned options because it has to compare the latency of two sessions in one
+    process, and two default thread pools with spin-waiting interfere with each
+    other badly enough to invent a 25% difference between identical graphs.
+    Callers that are not measuring latency should leave it alone.
+    """
+    if session_options is None:
+        return ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    return ort.InferenceSession(
+        onnx_path, sess_options=session_options, providers=["CPUExecutionProvider"]
+    )
 
 
 def predict(
