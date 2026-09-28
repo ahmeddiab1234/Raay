@@ -29,6 +29,7 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 - [Phase 3: Modeling Baseline](#phase-3-modeling-baseline)
 - [Phase 4: Compression &amp; Optimization](#phase-4-compression--optimization)
 - [Phase 5: Serving &amp; Operations](#phase-5-serving--operations)
+- [Phase 6: CI/CD, Deployment &amp; Automation](#phase-6-cicd-deployment--automation)
 - [Testing](#testing)
 - [Limitations &amp; Honest Findings](#limitations--honest-findings)
 - [Environment Variables](#environment-variables)
@@ -42,7 +43,7 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 
 The project covers the full ML lifecycle: data versioning, experiment tracking, model training, inference optimization, and model serving.
 
-**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly with a PSI drift gate, and rolled out via a **shadow-then-canary** deployment (5/95 → 100 % on Prometheus-fed stage gates).
+**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly with a PSI drift gate, rolled out via a **shadow-then-canary** deployment (5/95 → 100 % on Prometheus-fed stage gates), and guarded end to end by an automated **CI/CD pipeline** — a ±0.005 split-metrics gate on every PR, a Docker image built only on `main`, staged deploys with automatic rollback, a 14-gate promotion gate that is the only mover of the `Production` alias, and weekly retrain hooks that turn newly versioned data into a reviewable PR.
 
 ---
 
@@ -584,6 +585,42 @@ The refresh threshold defaults to `0.005` and is dispatch-overridable via
 run summary. ~19 structural tests in `tests/test_retrain_workflow.py`; the
 `--ignore` change to `ci_metrics_gate.py` leaves the default path byte-identical,
 so CI's own gate is untouched (35 tests).
+
+---
+
+## Phase 6: CI/CD, Deployment &amp; Automation
+
+The pipeline is four workflow files with one shared quality gate and one mover of truth.
+
+| Piece | File | Trigger | What it does |
+| --- | --- | --- | --- |
+| **CI** | `.github/workflows/ci.yml` | every PR / push to `dev` | lint + test, then `dvc repro` and the ±0.005 split-metrics gate as a PR comment |
+| **CD** | `.github/workflows/cd.yml` | every push to `main` | builds the serving image, versioned `int8-<md5>`, smoke-tests it, pushes to GHCR |
+| **Staging deploy** | `cd.yml` → `deploy-staging` job | after a published image | deploys to the staging box, gates it, auto-rolls back to the last smoke-tested sha |
+| **Promotion gate** | `.github/workflows/promote.yml` | dispatch / weekly | 14-gate evaluation; the only code that moves the `Production` alias |
+| **Retrain check** | `.github/workflows/retrain.yml` | weekly / dispatch | re-runs `dvc repro` on new raw data; opens a data-refresh PR (see 5.8) |
+
+### 6.1 CI — gate every change to `dev`
+
+`lint` (ruff check, ruff format --check, mypy) → `test` (pytest with coverage) → `pipeline` (`needs: [lint, test]`): `dvc pull data/raw/Final_Data.csv.dvc` → `dvc repro` → `dvc status` must be clean → `scripts/ci_metrics_gate.py --threshold 0.005` diffs `reports/split_metrics.json` against the merge-base and posts the table as a PR comment → `git diff --exit-code dvc.lock`. At ±0.005 the integer counts must match exactly; proportions may move half a point. Fork PRs run lint+test but skip the secret-dependent DVC steps.
+
+### 6.2 CD — publish an image only from `main`
+
+`main` is a fast-forward of `dev`, so every commit published here already passed CI's gate on its PR; CD does not re-run it. The image bakes the four DVC-served artifacts (the int8 graph + the baseline tokenizer, never the MLflow registry — see `docs/pr6.md` for why). `model_version` is derived from the graph's md5 (`int8-687d587004c6`) and ships twice: as an OCI label for `docker inspect`, and as a build-arg that the service reports on `/health` and `/predict`. A smoke test greps both routes for the version before anything is pushed.
+
+### 6.3 Staging — deploy, verify, or roll back
+
+`scripts/deploy_staging.py` (run over SSH by the CD job) pulls the image, waits for health, cross-checks the running container's revision label against the target sha, runs three Arabic predictions against fixed confidence floors, and asserts `{"texts":[1]}` returns 422. Only then is `last_known_good` promoted; any failure rolls back to the previous smoke-tested sha (never `latest`). Local rehearsal without a VM: `scripts/deploy_staging.py --registry localhost:5050 --repository <repo> --skip-login` against a `registry:2`.
+
+### 6.4 Promotion — the only mover of `Production`
+
+`scripts/promote_model.py` runs 14 gates (frozen-split hash, full-split evaluation, label order, F1/accuracy/recall vs Production and vs `eval_baseline.json`, absolute Neutral/Negative recall floors, interleaved null-controlled latency A/B, size, ONNX parity) with a calibrated `floor_tolerance=0.01`, then moves the `Production` alias only on a clean sweep. Locally:
+
+```bash
+uv run python scripts/promote_model.py --candidate-version 7 --skip-registry
+```
+
+`promote.yml` splits it into a measuring `gate` job and a human-approved `promote` job that re-runs the gate at flip time. Exit codes: `0` passed, `1` a gate failed, `2` the gate could not run at all (and produces no report, deliberately).
 
 ---
 
