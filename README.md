@@ -1,3 +1,5 @@
+<div align="center">
+
 # Raay راي
 
 **Arabic E-Commerce Product Review Sentiment Analysis**
@@ -9,7 +11,9 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 [![Ruff](https://img.shields.io/badge/linter-ruff-orange)](https://docs.astral.sh/ruff/)
 [![MLflow](https://img.shields.io/badge/tracking-MLflow-0194E2)](https://mlflow.org/)
 [![DVC](https://img.shields.io/badge/data%20versioning-DVC-945DD6)](https://dvc.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+</div>
 
 ---
 
