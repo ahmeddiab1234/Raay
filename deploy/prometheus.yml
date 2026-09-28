@@ -1,0 +1,9 @@
+# Phase 5 step 5 -- compose-local Prometheus for the canary-agent scrapes.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: raay-canary-agent
+    static_configs:
+      - targets: ["raay-canary-agent:9100"]

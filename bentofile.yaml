@@ -53,11 +53,13 @@ python:
     - "mlflow>=3.15.1"
     - "numpy>=2.5.2"
     - "onnxruntime>=1.18.0"
+    - "prometheus-client>=0.21.0"
     - "pydantic>=2.13.4"
     - "python-dotenv>=1.2.3"
     - "starlette>=0.46.0"
     - "torch>=2.13.0"
     - "transformers>=5.15.1"
+    - "uvicorn>=0.30.0"
 
 docker:
   python_version: "3.12"

@@ -1,0 +1,141 @@
+# Phase 5 step 5 -- standalone shadow/canary rollout project (name: canary).
+#
+# Standalone on purpose, like docker-compose.staging.yml: no `build:` (the
+# rollout must never rebuild the repo image locally), no `env_file`. It owns
+# :8000 through the nginx front -- the service that a release deploy leaves
+# alone is the one in docker-compose.yml, so this project is `up -d`'d to run a
+# rollout and `down`'d when it is over (after `--mode rollback`).
+#
+# Traffic split / shadow mirror are driven by the GENERATED
+# deploy/nginx_canary.conf (see scripts/canary_promote.py). The agent and
+# prometheus are part of this project so the online stage gates have a live
+# source; they are rolled up with it and never linger.
+#
+# Every service uses the same immutable image:
+#   RAAY_IMAGE=ghcr.io/ahmeddiab1234/arabic-sentiment:<commit-sha>
+name: canary
+
+services:
+  raay-sentiment:
+    image: ${RAAY_IMAGE:?RAAY_IMAGE must name the immutable release image}
+    ports:
+      - "8002:3000"  # direct stable health gate; nginx owns :8000
+    environment:
+      RAAY_WORKER: stable
+      RAAY_TELEMETRY_URL: http://raay-canary-agent:9100/ingest
+      RAAY_ONNX_PATH: /home/bentoml/bento/src/models/onnx/model_int8.onnx
+      RAAY_TOKENIZER_DIR: /home/bentoml/bento/src/models/baseline/final
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  raay-sentiment-canary:
+    image: ${RAAY_IMAGE:?RAAY_IMAGE must name the immutable release image}
+    ports:
+      - "8001:3000"  # direct candidate health gate (mirror/weights bypass it)
+    environment:
+      RAAY_WORKER: candidate
+      RAAY_TELEMETRY_URL: http://raay-canary-agent:9100/ingest
+      RAAY_ONNX_PATH: /home/bentoml/bento/src/models/onnx/distilled.onnx
+      RAAY_TOKENIZER_DIR: /home/bentoml/bento/src/models/distilled/final
+    volumes:
+      - ./models/onnx/distilled.onnx:/home/bentoml/bento/src/models/onnx/distilled.onnx:ro
+      - ./models/onnx/distilled.onnx.data:/home/bentoml/bento/src/models/onnx/distilled.onnx.data:ro
+      - ./models/distilled/final:/home/bentoml/bento/src/models/distilled/final:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # nginx owns BOTH :8000 (live ingress) and :8081 (operator front) for the
+  # duration of the rollout; the generated conf behind the volume mount is what
+  # the script reloads between stages.
+  raay-nginx:
+    image: nginx:alpine
+    ports:
+      - "8000:8000"
+      - "8081:8081"
+    volumes:
+      - ./deploy/nginx_canary.conf:/etc/nginx/conf.d/canary.conf:ro
+    depends_on:
+      raay-sentiment:
+        condition: service_healthy
+      raay-sentiment-canary:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - "wget -q -O /dev/null http://127.0.0.1:8081/health || exit 1"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # One event sink per rollout, shared by both workers. Stateless in-memory
+  # counters (they reset on restart); prometheus keeps the window.
+  raay-canary-agent:
+    image: ${RAAY_IMAGE:?RAAY_IMAGE must name the immutable release image}
+    entrypoint:
+      - python
+      - -m
+      - uvicorn
+      - raay.serving.canary_agent:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9100"
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/health',timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    healthcheck:
+      test:
+        - CMD
+        - sh
+        - -c
+        - "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy || exit 1"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

@@ -46,6 +46,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+import urllib.request
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -360,6 +362,207 @@ class Validation422Middleware:
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
+_TELEMETRY_TIMEOUT_S = 0.5
+
+
+def _telemetry_target() -> str:
+    return os.environ.get("RAAY_TELEMETRY_URL", "").strip()
+
+
+def _worker_name() -> str:
+    return os.environ.get("RAAY_WORKER", "").strip()
+
+
+def _post_event(event: dict[str, Any]) -> None:
+    """POST one telemetry event to the canary-agent; never raises."""
+    target = _telemetry_target()
+    if not target:
+        return
+    url = f"{target.rstrip('/')}/ingest"
+    try:
+        data = json.dumps(event).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=_TELEMETRY_TIMEOUT_S) as resp:
+            resp.read()
+    except Exception:  # noqa: BLE001 - telemetry must never break the main path
+        logger.debug("Telemetry POST to {} failed; swallowed", url, exc_info=True)
+
+
+def _dispatch_event(event: dict[str, Any]) -> None:
+    """Hand the event to the agent off the serving path.
+
+    A daemon thread per event keeps the (sync) urllib POST off the event loop
+    so a slow or dead agent cannot add user-visible latency. Telemetry is only
+    enabled during a shadow/canary rollout, so the thread churn is bounded to
+    that window.
+    """
+    threading.Thread(target=_post_event, args=(event,), daemon=True).start()
+
+
+async def _drain_request(receive: Any) -> list[dict[str, Any]]:
+    """Consume the ASGI request body so its ``texts`` can be reported.
+
+    The downstream app receives these same messages again via
+    ``_replay_request``, so buffering does not change what the app sees.
+    """
+    chunks: list[dict[str, Any]] = []
+    while True:
+        message = await receive()
+        chunks.append(message)
+        if message.get("type") == "http.disconnect" or not message.get("more_body"):
+            break
+    return chunks
+
+
+def _replay_request(chunks: list[dict[str, Any]]) -> Any:
+    """Return a ``receive`` callable that replays the drained request body."""
+
+    index = 0
+
+    async def replay() -> dict[str, Any]:
+        nonlocal index
+        if index < len(chunks):
+            chunk = chunks[index]
+            index += 1
+            return chunk
+        return {"type": "http.disconnect", "body": b"", "more_body": False}
+
+    return replay
+
+
+def _request_texts(chunks: list[dict[str, Any]]) -> list[str]:
+    """Extract the ``texts`` the client asked to score (the pairing key input)."""
+
+    body = b"".join(
+        c.get("body", b"") for c in chunks if c.get("type") == "http.request"
+    )
+    try:
+        payload = json.loads(body.decode("utf-8", "replace") or "{}")
+    except (ValueError, AttributeError, TypeError):
+        return []
+    texts = payload.get("texts") or []
+    return [t for t in texts if isinstance(t, str)]
+
+
+class TelemetryMiddleware:
+    """Report per-request prediction events to the canary-agent sidecar.
+
+    Active only when BOTH ``RAAY_WORKER`` and ``RAAY_TELEMETRY_URL`` are set
+    (the shadow/canary compose sets them; a normal deployment is untouched).
+    For every ``/predict`` call it records the request id nginx injected
+    (``X-Request-ID``), whether the conf shadowed the request
+    (``X-Raay-Shadow: 1``), the worker's own latency, the response status and
+    the prediction payload, then hands the event to the agent off the serving
+    path. A broken or unreachable agent can never change a client-facing
+    response: the POST is fire-and-forget and swallowed.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http" or scope.get("path") != "/predict":
+            await self.app(scope, receive, send)
+            return
+        if not (_telemetry_target() and _worker_name()):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
+        request_id = headers.get(b"x-request-id", b"").decode("latin1")
+        shadow = headers.get(b"x-raay-shadow", b"") == b"1"
+        worker = _worker_name()
+        started = time.perf_counter()
+
+        # Buffer the request body so its ``texts`` reach the agent (the shadow
+        # agent pairs stable/candidate events on content) and replay it to the
+        # app untouched.
+        request_chunks = await _drain_request(receive)
+        texts = _request_texts(request_chunks)
+        replay_receive = _replay_request(request_chunks)
+
+        messages: dict[str, Any] = {"chunks": []}
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                messages["status"] = message["status"]
+            await send(message)
+            if message["type"] == "http.response.body":
+                messages["chunks"].append(message.get("body", b""))
+
+        try:
+            await self.app(scope, replay_receive, send_wrapper)
+        except Exception as exc:
+            self._report(
+                request_id=request_id,
+                worker=worker,
+                shadow=shadow,
+                texts=texts,
+                status=500,
+                body=b"",
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+                error=str(exc) or "exception",
+            )
+            raise
+
+        body = b"".join(messages["chunks"])
+        self._report(
+            request_id=request_id,
+            worker=worker,
+            shadow=shadow,
+            texts=texts,
+            status=int(messages.get("status", 500)),
+            body=body,
+            latency_ms=(time.perf_counter() - started) * 1000.0,
+            error=None,
+        )
+
+    def _report(
+        self,
+        *,
+        request_id: str,
+        worker: str,
+        shadow: bool,
+        texts: list[str],
+        status: int,
+        body: bytes,
+        latency_ms: float,
+        error: str | None,
+    ) -> None:
+        predictions: list[dict[str, Any]] = []
+        if status < 400 and not error:
+            try:
+                payload = json.loads(body.decode("utf-8", "replace"))
+                predictions = payload.get("predictions") or []
+            except (ValueError, AttributeError, TypeError):
+                predictions = []
+        if status < 400 and not predictions:
+            # An empty `texts: []` /predict has nothing worth comparing.
+            return
+        error = error or (f"http_{status}" if status >= 400 else None)
+        _dispatch_event(
+            {
+                "request_id": request_id,
+                "worker": worker,
+                "model_version": model_version(),
+                "status": status,
+                "error": error,
+                "latency_ms": round(latency_ms, 3),
+                "shadow": shadow,
+                "predictions": predictions,
+                "texts": texts,
+            }
+        )
+
+
 svc = Service(name="raay-sentiment", inner=RaaySV)
 svc.add_asgi_middleware(HealthRouteMiddleware)
 svc.add_asgi_middleware(Validation422Middleware)
+# Telemetry is registered last so it is the OUTERMOST middleware: it must see
+# the final response status/body (including the 422 that Validation422 re-emits).
+svc.add_asgi_middleware(TelemetryMiddleware)

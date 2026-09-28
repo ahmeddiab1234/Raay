@@ -42,7 +42,7 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 
 The project covers the full ML lifecycle: data versioning, experiment tracking, model training, inference optimization, and model serving.
 
-**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly with a PSI drift gate, and rolled out behind a 95/5 canary split.
+**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly with a PSI drift gate, and rolled out via a **shadow-then-canary** deployment (5/95 → 100 % on Prometheus-fed stage gates).
 
 ---
 
@@ -58,7 +58,7 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **Near-Real-Time Scoring** | Client-side Redis micro-batch consumer (drain-by-size*or* drain-by-time)                                     |
 | **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel                                      |
 | **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
-| **Canary Rollout**         | nginx 95/5 weighted split across two workers, health-gated registry promotion                                  |
+| **Canary Rollout**         | Standalone nginx-fronted project: shadow-mirror then 5/95→100 %, gated on Prometheus |
 | **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases                  |
 | **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
 | **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
@@ -109,7 +109,7 @@ raay/
 │
 ├── airflow/dags/                   # Nightly batch-scoring DAG
 ├── configs/                        # Hydra configs (train.yaml, distill.yaml)
-├── deploy/                         # nginx_canary.conf (95/5 weighted front)
+├── deploy/                         # nginx_canary.conf (generated front) · prometheus.yml
 │
 ├── data/                           # DVC-tracked (git-ignored)
 │   ├── raw/                        #   Source CSVs (.dvc pointers committed)
@@ -128,7 +128,8 @@ raay/
 ├── docs/                           # project_analysis.md · labeling_guidelines.md
 │
 ├── bentofile.yaml                  # Bento build recipe (serving-only deps + baked int8)
-├── docker-compose.yml              # prod worker + canary worker + nginx + redis
+├── docker-compose.yml              # prod worker + redis
+├── docker-compose.canary.yml       # standalone shadow/canary project (nginx + 2 workers + agent + Prometheus)
 ├── dvc.yaml · params.yaml          # Data pipeline stages + their parameters
 ├── .dvc/                           # DVC config & cache
 ├── .pre-commit-config.yaml         # ruff, ruff-format, mypy, DVC hooks
@@ -423,7 +424,7 @@ uv run python scripts/locust_run.py --users 8 --run-time 60
 ```bash
 uv run bentoml build -f bentofile.yaml
 uv run bentoml containerize raay-sentiment:latest --image-tag raay-sentiment:latest
-docker compose up -d           # prod :8000 · canary :8081 (nginx) · redis :6379
+docker compose up -d           # prod :8000 · redis :6379
 ```
 
 - The bento bakes `models/onnx/model_int8.onnx` + the baseline tokenizer, so the container is self-contained
@@ -488,42 +489,93 @@ The DAG `airflow/dags/raay_nightly_batch_scoring.py` runs daily at **03:00 UTC**
 
 > `LocalExecutor` is hard-blocked on SQLite — the runtime uses `SequentialExecutor`. Only change the executor while the scheduler is **stopped**, and trust the scheduler's own `/proc/<pid>/environ` over `airflow config get-value`.
 
-### 5.7 Canary Rollout
+### 5.7 Shadow-then-Canary Rollout
 
-An additive nginx front on `:8081` splitting **95/5** across two compose workers:
+A standalone compose project (`docker-compose.canary.yml`, `name: canary`) that
+owns **:8000 through its own nginx front** while a rollout runs, then hands it
+back. Two workers sit behind nginx, and `scripts/canary_promote.py` moves the
+traffic split stage by stage, gating each stage on the compose-local
+Prometheus that scrapes a canary-agent sidecar:
 
-| Worker                    | Graph             | Registry alias | Host port                               |
-| ------------------------- | ----------------- | -------------- | --------------------------------------- |
-| `raay-sentiment`        | INT8 (production) | `Production` | `8000`                                |
-| `raay-sentiment-canary` | distilled FP32    | `Canary`     | none (nginx reaches it by service name) |
+| Worker                    | Graph             | Registry alias        | Host port                                   |
+| ------------------------- | ----------------- | --------------------- | ------------------------------------------- |
+| `raay-sentiment`        | INT8 (production) | `Production` (alias)  | `8002` (direct health; nginx owns `8000`) |
+| `raay-sentiment-canary` | distilled FP32    | `Canary`              | `8001` (direct health)                      |
+| `raay-canary-agent`     | —                 | —                     | `9100` (`/ingest`, `/metrics`, `/health`)   |
+| `prometheus`            | —                 | —                     | `9090`                                      |
+
+Stage progression — each `advance` renders `deploy/nginx_canary.conf` and
+reloads nginx, but **only after** the previous stage's gates pass:
+
+| Stage      | Split        | Mirror? | Gate (over the trailing `--window`)                                     |
+| ---------- | ------------ | ------- | ----------------------------------------------------------------------- |
+| `shadow`   | 100 / 0      | yes     | label agreement ≥ 0.99, error rate ≤ 0.005, p95 ≤ 1.10× stable            |
+| `canary-5` | 95 / 5       | no      | error rate + p95 ratio (`agreement` needs the mirror, so it stops here)   |
+| `canary-25`| 75 / 25      | no      | error rate + p95 ratio                                                    |
+| `canary-50`| 50 / 50      | no      | error rate + p95 ratio                                                    |
+| `full`     | 0 / 100      | no      | online 50/50 gate **and** the Phase 6 offline gate (only code that    |
+|            |              |         | moves the `Production` alias)                                             |
 
 ```bash
-uv run python scripts/canary_promote.py --mode declare    # register the canary graph (idempotent)
-docker compose up -d                                      # brings up both workers + nginx
-curl -s :8081/health                                      # proves the 5 % slice is live
+# 1. declare the candidate graph (idempotent) and start the project
+uv run python scripts/canary_promote.py --mode declare
+RAAY_IMAGE=ghcr.io/ahmeddiab1234/arabic-sentiment:<sha> \
+  docker compose -f docker-compose.canary.yml up -d --no-build
 
-uv run python scripts/canary_promote.py --mode promote     # health-gate :8000 + :8081, then flip Production
-uv run python scripts/canary_promote.py --mode rollback    # flip Production back to INT8
+# 2. enter shadow -- every /predict is mirrored to the candidate, 100/0
+uv run python scripts/canary_promote.py --mode shadow
+
+# 3. widen the slice only on a green gate (FAIL = exit 1, INCONCLUSIVE = 2)
+uv run python scripts/canary_promote.py --mode advance --to canary-5
+uv run python scripts/canary_promote.py --mode advance --to canary-25
+uv run python scripts/canary_promote.py --mode advance --to canary-50
+uv run python scripts/canary_promote.py --mode advance --to full   # runs the Phase 6 gate
+
+# 4. rollback is one command: stable-only weights, then the pre-rollout alias
+uv run python scripts/canary_promote.py --mode rollback
+docker compose -f docker-compose.canary.yml down
 ```
 
-Both variants live under the **same** registered model; the canary worker binds `distilled.onnx` + `.onnx.data` + `models/distilled/final` read-only, so the alias is the promotion gate rather than the 5 % graph source. 14 hermetic tests in `tests/test_canary_nginx.py` (config-text parse + fake MLflow client — no nginx binary needed).
+Both variants live under the **same** registered model (`ArabicSentiment`); the
+canary worker binds `distilled.onnx` + `.onnx.data` + `models/distilled/final`
+read-only, so the registry alias is the promotion switch rather than the graph
+source. Rollout state lives in `reports/canary_state.json` (git-ignored) —
+`rollback` reads it, so a promotion and its rollback are one atomic story.
+
+A note on **shadow pairing**: the nginx `mirror` subrequest is a separate
+request object, so its `$request_id` differs from the main request's and
+`proxy_set_header` on the main location is invisible to it (nginx clones only
+client-sent headers). Correlation therefore happens in the agent on the
+request content, which the mirror *does* clone: it pairs stable/candidate
+events by `X-Request-ID` when a client supplies one, otherwise by the SHA-256
+of the request `texts`. 45 hermetic tests in `tests/test_canary_nginx.py`
+(renderer per stage, fake MLflow client, fake Prometheus — no nginx binary
+needed).
 
 ---
 
 ## Testing
 
-96 hermetic unit tests — no GPU, no network, no running servers:
+406 hermetic unit tests — no GPU, no network, no running servers:
 
 | Suite                            | Tests | Covers                                                                    |
 | -------------------------------- | ----: | ------------------------------------------------------------------------- |
+| `tests/test_promote_model.py`  |    66 | Phase 6 promotion gate (14 gates, latency A/B, dry-run safety)            |
+| `tests/test_cd_workflow.py`    |    48 | CD workflow contract (build → inspect → smoke test → push)                |
+| `tests/test_canary_nginx.py`   |    46 | Conf renderer per stage, compose, rollout semantics, gate math            |
+| `tests/test_canary_agent.py`   |    24 | Shadow pairing (request-id + content), gaps, Prometheus text              |
+| `tests/test_serving.py`        |    36 | BentoML service, health middleware, 422 validation, telemetry events      |
+| `tests/test_deploy_staging.py` |    36 | Staging deploy tool (flip/schema/unhealthy rollback paths)                |
+| `tests/test_promote_workflow.py`|   29 | Promotion workflow contract (gate → human → re-gate)                     |
+| `tests/test_ci_metrics_gate.py`|    28 | Split-metrics diff gate                                                    |
 | `tests/test_batch_consumer.py` |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer              |
+| `tests/test_ci_workflow.py`    |    20 | CI workflow structural contract                                           |
 | `tests/test_batch_score.py`    |    14 | Input sampling, scoring, PSI drift verdicts                               |
-| `tests/test_canary_nginx.py`   |    14 | nginx config parse + canary promote/rollback against a fake MLflow client |
-| `tests/test_serving.py`        |    13 | BentoML service, health middleware, 422 validation                        |
-| `tests/test_export_onnx.py`    |     9 | Export parity helpers                                                     |
 | `tests/test_preprocess.py`     |     9 | Normalization, dedup, near-empty flagging                                 |
+| `tests/test_export_onnx.py`    |     9 | Export parity helpers                                                     |
 | `tests/test_dialect.py`        |     7 | Dialect heuristics + confidence                                           |
 | `tests/test_distill.py`        |     7 | Distillation loss / config wiring                                         |
+| `tests/test_split.py`          |     6 | Split sizes + label/dialect proportions                                   |
 | `tests/test_quantize_onnx.py`  |     3 | Quantization + parity report                                              |
 
 ```bash
@@ -537,7 +589,7 @@ uv run pytest
 Stated plainly, because the numbers above are only useful with their caveats:
 
 - **Micro-batching does not beat serial scoring on this box.** At batch 32 the INT8 graph costs ~58–84 ms *per item* vs ~12 ms single — a `pure_cpu` speedup of **0.25×** (0.50× once a 20 ms per-call overhead is modeled). Batching still wins on *call amortization* (128 reviews → 4 `session.run` calls) and on batch-throughput-bound backends (GPU / TensorRT) or high per-call HTTP overhead. On a 2-core CPU, treat `pure_cpu < 1` as expected, not a bug.
-- **The canary latency signal is not real.** Both workers share 2 cores, so the 5 % slice's latency sawtooth is CPU contention. The behavioral gate is the nightly PSI drift job, not nginx latency.
+- **The canary latency gate compares like for like on shared cores.** Both workers run on the same box, so their p95s are a same-hardware A/B (fair) *and* both contend for the same cores (the candidate's sawtooth is partly CPU contention). The stage gates therefore require the *ratio* ≤ 1.10, never an absolute budget. The behavioral gate is still the nightly PSI drift job.
 - **INT8 "gaining" accuracy is noise.** 85.03 % vs 84.92 % is within quantization noise on 7 209 samples; the honest claim is "no meaningful quality loss at 4× compression".
 - **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one.
 - **No local GPU.** Training and distillation run on Kaggle; local work is CPU-only inference.

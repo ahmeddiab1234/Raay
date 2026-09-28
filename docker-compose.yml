@@ -7,6 +7,9 @@
 # `--no-build` matters: these services carry a `build:` block for local image
 # work, so without it compose rebuilds the repo image instead of using the
 # pulled one.
+#
+# The shadow/canary rollout is a SEPARATE project (docker-compose.canary.yml,
+# `name: canary`) -- it owns :8000 through its own nginx front while it runs.
 services:
   raay-sentiment:
     image: ${RAAY_IMAGE:-raay-sentiment:latest}
@@ -29,60 +32,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
-    restart: unless-stopped
-
-  # Phase 5 step 4 canary worker: same image, distilled fp32 graph (bound
-  # read-only over the baked int8). No host port -- nginx reaches it by
-  # compose service name on the private network.
-  raay-sentiment-canary:
-    image: ${RAAY_IMAGE:-raay-sentiment:latest}
-    environment:
-      RAAY_ONNX_PATH: /home/bentoml/bento/src/models/onnx/distilled.onnx
-      RAAY_TOKENIZER_DIR: /home/bentoml/bento/src/models/distilled/final
-      RAAY_REGISTERED_MODEL: ArabicSentimentDistilled
-      RAAY_ALIAS: Canary
-      MLFLOW_TRACKING_URI: sqlite:///mlflow.db
-      MLFLOW_ALLOW_FILE_STORE: "true"
-    volumes:
-      - ./models/onnx/distilled.onnx:/home/bentoml/bento/src/models/onnx/distilled.onnx:ro
-      - ./models/onnx/distilled.onnx.data:/home/bentoml/bento/src/models/onnx/distilled.onnx.data:ro
-      - ./models/distilled/final:/home/bentoml/bento/src/models/distilled/final:ro
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health',timeout=3).status==200 else 1)"
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
-    restart: unless-stopped
-
-  # Phase 5 step 4 canary front: nginx:alpine, 95/5 weighted split over the
-  # prod (int8) + canary (distilled fp32) workers. Additive: :8000 is
-  # untouched; :8081 is the canary front into the same two workers.
-  raay-nginx:
-    image: nginx:alpine
-    ports:
-      - "8081:8081"
-    volumes:
-      - ./deploy/nginx_canary.conf:/etc/nginx/conf.d/canary.conf:ro
-    depends_on:
-      raay-sentiment:
-        condition: service_healthy
-      raay-sentiment-canary:
-        condition: service_healthy
-    healthcheck:
-      test:
-        - CMD
-        - sh
-        - -c
-        - "wget -q -O /dev/null http://127.0.0.1:8081/health || exit 1"
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
     restart: unless-stopped
 
   queue-redis:

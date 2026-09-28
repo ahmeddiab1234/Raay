@@ -7,10 +7,12 @@ import torch
 from starlette.testclient import TestClient
 from transformers import BertConfig, BertForSequenceClassification
 
+import raay.serving.serve as serve_mod
 from raay.inference.export_onnx import export_to_onnx
 from raay.serving.serve import (
     HealthRouteMiddleware,
     PredictResponse,
+    TelemetryMiddleware,
     Validation422Middleware,
     _resolve_onnx_path,
     model_version,
@@ -185,6 +187,166 @@ def test_validation_422_middleware_leaves_non_validation_400():
     body = b'{"error": "task_id is required"}'
     messages = _run_middleware(Validation422Middleware, body)
     assert messages[0]["status"] == 400
+
+
+# ------------------------------------------------------- telemetry middleware
+
+
+def test_service_has_telemetry_middleware():
+    middlewares = [cls for cls, _ in svc.middlewares]
+    assert TelemetryMiddleware in middlewares
+
+
+def _run_telemetry(
+    body=b'{"predictions": [{"label": "positive", "score": 0.9}]}',
+    status=200,
+    request_id=b"r-1",
+    shadow=False,
+    path="/predict",
+    app=None,
+    request_body=b"",
+):
+    messages = []
+
+    async def send(message):
+        messages.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": request_body, "more_body": False}
+
+    async def default_app(_scope, _receive, send):
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
+    headers = [(b"x-request-id", request_id)]
+    if shadow:
+        headers.append((b"x-raay-shadow", b"1"))
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "headers": headers,
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("127.0.0.1", 3000),
+        "client": ("127.0.0.1", 50000),
+    }
+    middleware = TelemetryMiddleware(app or default_app)
+    asyncio.run(middleware(scope, receive, send))
+    return messages
+
+
+def _capture_events(monkeypatch):
+    events = []
+
+    def capture(event):
+        events.append(event)
+
+    monkeypatch.setattr(serve_mod, "_dispatch_event", capture)
+    return events
+
+
+def test_telemetry_off_by_default_passes_through(monkeypatch):
+    monkeypatch.delenv("RAAY_TELEMETRY_URL", raising=False)
+    monkeypatch.delenv("RAAY_WORKER", raising=False)
+    events = _capture_events(monkeypatch)
+    messages = _run_telemetry()
+    assert messages[0]["status"] == 200  # downstream ran, response passed through
+    assert events == []
+
+
+def test_telemetry_emits_prediction_event(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "stable")
+    monkeypatch.setenv("RAAY_MODEL_VERSION", "int8-687d587004c6")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(request_id=b"req-42")
+    assert len(events) == 1
+    event = events[0]
+    assert event["request_id"] == "req-42"
+    assert event["worker"] == "stable"
+    assert event["model_version"] == "int8-687d587004c6"
+    assert event["status"] == 200
+    assert event["shadow"] is False
+    assert event["error"] is None
+    assert event["latency_ms"] >= 0.0
+    assert event["predictions"] == [{"label": "positive", "score": 0.9}]
+
+
+def test_telemetry_marks_shadowed_requests(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "candidate")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(shadow=True)
+    assert len(events) == 1
+    assert events[0]["shadow"] is True
+    assert events[0]["worker"] == "candidate"
+
+
+def test_telemetry_carries_request_texts_for_pairing(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "candidate")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(
+        request_body='{"texts": ["منتج رائع", "وصلت متأخرة"]}'.encode(),
+        shadow=True,
+    )
+    assert len(events) == 1
+    assert events[0]["texts"] == ["منتج رائع", "وصلت متأخرة"]
+    assert events[0]["predictions"] == [{"label": "positive", "score": 0.9}]
+
+
+def test_telemetry_skips_empty_predictions(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "stable")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(body=b'{"predictions": []}')
+    assert events == []
+
+
+def test_telemetry_still_reports_errors_without_predictions(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "stable")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(body=b'{"error": "boom"}', status=500)
+    assert len(events) == 1
+    assert events[0]["status"] == 500
+    assert events[0]["error"] == "http_500"
+    assert events[0]["predictions"] == []
+
+
+def test_telemetry_ignores_non_predict_paths(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "stable")
+    events = _capture_events(monkeypatch)
+    _run_telemetry(path="/health")
+    assert events == []
+
+
+def test_telemetry_rethrows_downstream_exceptions_after_reporting(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://raay-canary-agent:9100")
+    monkeypatch.setenv("RAAY_WORKER", "stable")
+    events = _capture_events(monkeypatch)
+
+    async def boom(_scope, _receive, _send):
+        raise RuntimeError("graph exploded")
+
+    with pytest.raises(RuntimeError, match="graph exploded"):
+        _run_telemetry(app=boom)
+    assert len(events) == 1
+    assert events[0]["status"] == 500
+    assert events[0]["error"] == "graph exploded"
+
+
+def test_telemetry_post_failures_are_swallowed(monkeypatch):
+    monkeypatch.setenv("RAAY_TELEMETRY_URL", "http://127.0.0.1:9")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("agent unreachable")
+
+    monkeypatch.setattr(serve_mod.urllib.request, "urlopen", boom)
+    # Must not raise: telemetry can never break user traffic.
+    serve_mod._post_event({"request_id": "r1"})
 
 
 def test_resolve_uses_raay_onnx_path_override():
