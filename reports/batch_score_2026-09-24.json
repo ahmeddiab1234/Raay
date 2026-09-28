@@ -1,6 +1,6 @@
 {
   "n_reviews": 1000,
-  "elapsed_sec": 74.90005479699903,
+  "elapsed_sec": 79.00279087499803,
   "batch_size": 64,
   "label_columns": [
     "positive",
