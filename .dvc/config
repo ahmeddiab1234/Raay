@@ -1,4 +1,6 @@
 [core]
-    remote = storage
+    remote = dagshub
 ['remote "storage"']
     url = /home/diab/dvc-storage/raay
+['remote "dagshub"']
+    url = https://dagshub.com/shhth0034/Raay.dvc
