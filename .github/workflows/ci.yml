@@ -124,6 +124,7 @@ jobs:
               remote = dagshub
           ['remote "dagshub"']
               url = https://dagshub.com/shhth0034/Raay.dvc
+              auth = basic
               user = ${DAGSHUB_USER}
               password = ${DAGSHUB_TOKEN}
           EOF
