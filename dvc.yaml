@@ -23,3 +23,6 @@ stages:
     - data/processed/test.csv
     - data/processed/train.csv
     - data/processed/val.csv
+    metrics:
+    - reports/split_metrics.json:
+        cache: false

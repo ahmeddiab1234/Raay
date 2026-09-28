@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -9,6 +11,39 @@ import mlflow
 from raay.config.env import load_environment
 from raay.data.dialect import add_dialect_column
 from raay.enums.constants import DefaultPaths, Experiments, SplitFileNames
+
+# Proportions are rounded before they reach reports/split_metrics.json so the
+# CI drift gate (scripts/ci_metrics_gate.py, +/-0.005) compares stable values
+# instead of full float reprs.
+_PROPORTION_DP = 5
+
+
+def _proportions(series: pd.Series) -> dict[str, float]:
+    """Value counts as fractions of the total, keyed by sorted category."""
+    counts = series.value_counts()
+    total = float(counts.sum())
+    if total == 0:
+        return {}
+    return {
+        str(key): round(float(value) / total, _PROPORTION_DP)
+        for key, value in counts.sort_index().items()
+    }
+
+
+def build_split_metrics(splits: dict[str, pd.DataFrame]) -> dict[str, Any]:
+    """Assemble the ``reports/split_metrics.json`` payload for the CI drift gate.
+
+    Sizes are raw row counts and label/dialect breakdowns are proportions, so a
+    +/-0.005 threshold means "counts must match exactly" and "proportions may
+    move half a percentage point" respectively.
+    """
+    metrics: dict[str, Any] = {f"{name}_size": len(df) for name, df in splits.items()}
+    for column, key in (
+        ("label", "label_proportions"),
+        ("dialect", "dialect_proportions"),
+    ):
+        metrics[key] = {name: _proportions(df[column]) for name, df in splits.items()}
+    return metrics
 
 
 def load_config(
@@ -59,6 +94,8 @@ def main():
     input_path = Path(DefaultPaths.INTERIM_DATA.value)
     output_dir = Path(DefaultPaths.PROCESSED_DATA.value)
     output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(DefaultPaths.SPLIT_METRICS.value)
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Loading normalized data from {input_path}")
     df = pd.read_csv(input_path)
@@ -95,6 +132,14 @@ def main():
         test_df.to_csv(test_path, index=False)
 
         logger.info(f"Saved splits to {output_dir}")
+
+        split_metrics = build_split_metrics(
+            {"train": train_df, "val": val_df, "test": test_df}
+        )
+        with open(metrics_path, "w") as f:
+            json.dump(split_metrics, f, indent=4)
+
+        logger.info(f"Split metrics saved to {metrics_path}")
 
         # Log metrics to mlflow
         mlflow.log_metrics(

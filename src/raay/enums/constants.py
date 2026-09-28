@@ -41,6 +41,7 @@ class DefaultPaths(str, Enum):
     VAL_SPLIT = "data/processed/val.csv"
     TEST_SPLIT = "data/processed/test.csv"
     PREPROCESS_METRICS = "reports/preprocess_metrics.json"
+    SPLIT_METRICS = "reports/split_metrics.json"
     EVAL_BASELINE = "reports/eval_baseline.json"
     EVAL_DISTILLED = "reports/eval_distilled.json"
     EVAL_INT8 = "reports/eval_int8.json"

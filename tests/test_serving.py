@@ -1,7 +1,9 @@
 import asyncio
 
 import numpy as np
+import pytest
 import torch
+from starlette.testclient import TestClient
 from transformers import BertConfig, BertForSequenceClassification
 
 from raay.inference.export_onnx import export_to_onnx
@@ -14,6 +16,44 @@ from raay.serving.serve import (
     svc,
     to_predictions,
 )
+
+
+@pytest.fixture(scope="module")
+def client():
+    """In-process ASGI client for the real BentoML app.
+
+    ``TestClient`` must be used as a context manager: BentoML instantiates the
+    inner service in the Starlette lifespan (``create_instance``), so without it
+    every route resolves against a ``None`` instance and 500s. No model graph
+    is needed here -- ``/health`` short-circuits in
+    ``HealthRouteMiddleware`` and malformed payloads are rejected by the input
+    model before ``RaaySV._ensure_loaded()`` runs.
+    """
+    with TestClient(svc.to_asgi()) as test_client:
+        yield test_client
+
+
+def test_asgi_health_returns_200_without_redirect(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({}, id="missing-field"),
+        pytest.param({"texts": 5}, id="not-a-list"),
+        pytest.param({"texts": None}, id="null"),
+        pytest.param({"texts": [1, 2]}, id="non-string-items"),
+    ],
+)
+def test_asgi_malformed_payloads_return_422(client, payload):
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
+    body = response.json()
+    assert "validation error for" in body["error"]
+    assert isinstance(body["detail"], list) and body["detail"]
 
 
 def test_service_has_middlewares():

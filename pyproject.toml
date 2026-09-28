@@ -57,6 +57,9 @@ dev = [
     "wordcloud>=1.9.6",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.mypy]
 ignore_missing_imports = true
 
