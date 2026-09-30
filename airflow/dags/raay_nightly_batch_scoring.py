@@ -13,7 +13,11 @@ raay project venv via ``uv run``:
    vs data/scoring/reference/reference.csv -> reports/drift/{{ ds }}.json;
 4. ``run_prediction_drift_check`` -- Phase 6 step 2: the predicted class mix vs
    the training label prior, mean confidence, and a triage verdict pairing this
-   output-side signal with task 3 -> reports/prediction_drift/{{ ds }}.json.
+   output-side signal with task 3 -> reports/prediction_drift/{{ ds }}.json;
+5. ``evaluate_retrain_trigger`` -- Phase 6 step 3: turns tasks 3+4 into a
+   retrain decision (psi_breach / scheduled / manual / none) and records the
+   reason in MLflow -> reports/retrain_trigger/{{ ds }}.json. It does not
+   retrain: fine-tuning is scripts/kaggle_train_runs.py on a Kaggle GPU.
 
 The DAG itself is thin and stateless on purpose: Airflow owns retries /
 scheduling / logs; the heavy lifting stays in the tested batch_score module.
@@ -34,6 +38,21 @@ def step(mode: str) -> str:
     return (
         f"cd {REPO} && uv run python -m raay.inference.batch_score "
         f"--mode {mode} --date " + "{{ ds }}"
+    )
+
+
+def trigger_step() -> str:
+    """Bash snippet: run the Phase 6 step 3 retrain trigger.
+
+    A separate module rather than a sixth ``batch_score`` mode: the trigger
+    reads two JSON reports and needs no frame, encoder, or ONNX graph, so
+    putting it in ``batch_score`` would drag that machinery's argument parsing
+    and lazy-loading decisions into a decision that needs none of it.
+    """
+    return (
+        f"cd {REPO} && uv run python -m raay.inference.retrain_trigger --date "
+        + "{{ ds }}"
+        + " --token-file airflow_runtime/secrets/github_dispatch_token"
     )
 
 
@@ -75,4 +94,11 @@ with DAG(
         task_id="run_prediction_drift_check",
         bash_command=step("predict-drift"),
     )
-    materialize >> score >> drift >> predict_drift
+    # Phase 6 step 3. Last in the chain: it reads both of the preceding reports,
+    # so running it before them would decide `none` on a night whose signals
+    # had not been written yet.
+    trigger = BashOperator(
+        task_id="evaluate_retrain_trigger",
+        bash_command=trigger_step(),
+    )
+    materialize >> score >> drift >> predict_drift >> trigger

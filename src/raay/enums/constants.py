@@ -62,6 +62,11 @@ class DefaultPaths(str, Enum):
     # Phase 6 step 2 (prediction drift) writes its own report family so the
     # output-side verdict is readable without parsing the input-side one.
     PREDICTION_DRIFT_REPORTS = "reports/prediction_drift"
+    # Phase 6 step 3 (retrain trigger) records the nightly *decision*, not a
+    # measurement. Tracked like the other report families because
+    # promote_model.py reads it from a fresh CI checkout to stamp the reason
+    # onto the promoted model version.
+    RETRAIN_TRIGGER_REPORTS = "reports/retrain_trigger"
     ONNX_DIR = "models/onnx"
     ONNX_MODEL = "models/onnx/model.onnx"
     ONNX_DISTILLED = "models/onnx/distilled.onnx"
@@ -74,6 +79,8 @@ class DefaultPaths(str, Enum):
     OUTPUT_DIR_DISTILL = "outputs/distill"
     CONFIG_TRAIN = "configs/train.yaml"
     CONFIG_DISTILL = "configs/distill.yaml"
+    # Phase 6 step 3: calendar events that can justify a seasonal retrain.
+    CONFIG_SEASONAL_EVENTS = "configs/seasonal_events.yaml"
     PARAMS = "params.yaml"
     LOGS = "logs"
 

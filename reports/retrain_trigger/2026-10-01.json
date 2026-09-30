@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-01",
+  "triggered": false,
+  "reason": "none",
+  "forced": false,
+  "psi": {
+    "fired": false,
+    "worst": {},
+    "decisions": {
+      "FAIL": 0,
+      "WARN": 0,
+      "SKIPPED": 1,
+      "ERROR": 0,
+      "PASS": 17
+    },
+    "n_signals_checked": 18,
+    "thresholds": {
+      "warn": 0.1,
+      "fail": 0.2
+    },
+    "escalate": false,
+    "escalate_ignored": false
+  },
+  "calendar": {
+    "fired": false,
+    "event": null,
+    "other_in_window": [],
+    "unconfirmed": [
+      "ramadan",
+      "eid_al_fitr",
+      "eid_al_adha"
+    ],
+    "unresolvable": [],
+    "window": {
+      "from": "2026-10-01",
+      "to": "2026-11-05",
+      "lead_days": 21
+    }
+  },
+  "reasons_available": [
+    "manual",
+    "psi_breach",
+    "scheduled",
+    "none"
+  ],
+  "inputs": {
+    "input_drift_report": "reports/drift/2026-10-02.json",
+    "prediction_drift_report": "reports/prediction_drift/2026-10-01.json"
+  },
+  "dispatch": {
+    "attempted": false,
+    "reason_not_attempted": "no dispatch token on this host; the trigger is recorded and the nightly job exits 0"
+  },
+  "handoff": "This job does not fine-tune. Retraining is scripts/kaggle_train_runs.py on a Kaggle GPU; scripts/promote_model.py is the only code allowed to move the Production alias.",
+  "caveat": "Both drift panels are seeded draws from data/processed/test.csv, so a breach here reflects the test split, not production traffic. The seasonal signal is calendar-only and cannot be validated: no row in this corpus carries a timestamp."
+}

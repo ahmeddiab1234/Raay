@@ -8,7 +8,10 @@ deleted gate would only surface on a real run. These assertions pin:
 * the branch contract (file on main for scheduling, work against `dev`),
 * the reuse of the SAME gate CI uses, with the sizes/counts escape hatch,
 * the no-op early exit (unchanged data costs nothing),
-* the pass -> data-refresh-PR and fail -> alarm paths, and
+* the pass -> data-refresh-PR and fail -> alarm paths,
+* Phase 6 step 3's `notify` job: dispatch-only, issue-only, and explicitly
+  incapable of retraining (the refresh job's early exit is intentionally left
+  intact -- a psi_breach means the raw data did not change), and
 * the omissions that matter (no secrets in argv, no fork path).
 """
 
@@ -33,12 +36,20 @@ def _commands(workflow):
     return "\n".join(s.get("run", "") for s in _steps(workflow))
 
 
+def _notify_steps(workflow):
+    return workflow["jobs"]["notify"]["steps"]
+
+
+def _notify_commands(workflow):
+    return "\n".join(s.get("run", "") for s in _notify_steps(workflow))
+
+
 def test_workflow_is_valid_yaml_and_has_the_expected_job(workflow):
     triggers = workflow[True] if True in workflow else workflow["on"]
     assert "schedule" in triggers
     assert "workflow_dispatch" in triggers
     assert "repository_dispatch" in triggers
-    assert set(workflow["jobs"]) == {"refresh"}
+    assert set(workflow["jobs"]) == {"refresh", "notify"}
 
 
 def test_weekly_schedule_is_kept_next_to_the_promote_cadence(workflow):
@@ -65,11 +76,13 @@ def test_workflow_operates_on_dev_though_it_is_scheduled_from_main(workflow):
 
 
 def test_write_permissions_are_declared_and_scoped(workflow):
-    # The only writes are the data-refresh branch push (contents) and the PR
-    # against dev (pull-requests); nothing else in this workflow needs them.
+    # The writes are the data-refresh branch push (contents), the PR against dev
+    # (pull-requests), and Phase 6 step 3's retrain issue (issues). Declared
+    # explicitly and reviewed here so a fourth, unreviewed scope cannot appear.
     assert workflow["permissions"] == {
         "contents": "write",
         "pull-requests": "write",
+        "issues": "write",
     }
 
 
@@ -185,6 +198,55 @@ def test_report_is_uploaded_and_summarised_on_every_path(workflow):
 def test_dispatch_reason_is_echoed_but_never_trusted(workflow):
     commands = _commands(workflow)
     assert "client_payload.reason || 'schedule'" in commands
+
+
+def test_notify_job_is_dispatch_only_and_follows_the_refresh(workflow):
+    # A schedule run carries no drift evidence, so the notify job must not run
+    # for it; and it needs the refresh job so the two never race on the same run.
+    notify = workflow["jobs"]["notify"]
+    assert notify["if"] == "github.event_name == 'repository_dispatch'"
+    assert notify["needs"] == "refresh"
+
+
+def test_notify_job_cannot_retrain(workflow):
+    # The whole point of a separate job: it decides and records, it does not
+    # fine-tune. Naming kaggle_train_runs.py in prose is fine; *invoking*
+    # anything that could train or ship is not, so this pins the execution
+    # vectors rather than mere mentions.
+    commands = _notify_commands(workflow)
+    for forbidden in ("uv run", "dvc ", "python -m ", "bentoml ", "docker "):
+        assert forbidden not in commands
+
+
+def test_notify_reads_every_payload_field_it_reports(workflow):
+    # Dump the whole job, not just the run strings: the payload fields are bound
+    # in each step's `env:`, and asserting on `run` alone would miss them.
+    job = yaml.safe_dump(workflow["jobs"]["notify"])
+    for field in ("reason", "trigger_date", "psi", "psi_column", "triage"):
+        assert f"client_payload.{field}" in job
+    # The evidence must reach the issue body, not just the shell environment.
+    commands = _notify_commands(workflow)
+    assert "worst column" in commands
+    assert "| PSI |" in commands
+
+
+def test_notify_issue_is_idempotent(workflow):
+    # A retried dispatch must not stack duplicate issues.
+    commands = _notify_commands(workflow)
+    assert "gh issue list" in commands
+    assert "already exists; nothing to do" in commands
+    assert commands.count("gh issue create") == 1
+
+
+def test_refresh_early_exit_is_deliberately_left_intact(workflow):
+    # Phase 6 step 3 must NOT bypass this. A psi_breach means the raw data is
+    # unchanged, so the refresh job is correctly a no-op; forcing past the exit
+    # would reach `git commit` with nothing staged and fail. The notify job is
+    # the receiver instead, so the early exit stays exactly where it was.
+    steps = _steps(workflow)
+    early = next(s for s in steps if "Early-exit" in s.get("name", ""))
+    assert "git diff --exit-code --quiet dvc.lock" in early["run"]
+    assert "exit 0" in early["run"]
 
 
 def test_no_fork_handling_is_needed(workflow):

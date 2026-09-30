@@ -39,6 +39,7 @@ from typing import Any, Protocol
 import numpy as np
 import pandas as pd
 import yaml
+from loguru import logger
 
 from raay.enums.constants import DefaultPaths, Models
 
@@ -71,6 +72,10 @@ class RegistryClient(Protocol):
     def get_model_version(self, name: str, version: str) -> Any: ...
 
     def get_model_version_download_uri(self, name: str, version: str) -> str: ...
+
+    def set_model_version_tag(
+        self, name: str, version: str, key: str, value: str
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -671,6 +676,75 @@ def evaluate_all_gates(
 # --- reporting ---------------------------------------------------------------
 
 
+def trigger_report_path(cfg: Config) -> Path | None:
+    """Newest Phase 6 step 3 trigger report, or ``None`` when there is none.
+
+    The trigger reports are git-tracked (unlike the per-run data-refresh
+    reports), so on a fresh checkout the promoted version can be stamped with
+    the reason it was retrained. Absent is normal: a promotion driven by hand,
+    or one predating this step, simply carries no trigger tag.
+    """
+    reports = cfg.report_dir / "retrain_trigger"
+    if not reports.is_dir():
+        return None
+    candidates = sorted(reports.glob("*.json"))
+    return candidates[-1] if candidates else None
+
+
+def trigger_version_tags(cfg: Config) -> dict[str, str]:
+    """Registry tags recording *why* a version was retrained.
+
+    Deliberately best-effort and total: an unreadable or half-written trigger
+    report yields no tags rather than raising, because losing the audit trail
+    is not a reason to block a promotion that already passed 14 gates.
+    """
+    path = trigger_report_path(cfg)
+    if path is None:
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    # Only a firing report says anything about *why* this version exists. A
+    # clean night's report (`reason: none`) is a non-trigger: tagging the
+    # version with it would assert a drift-motivated promotion that did not
+    # happen, which is worse than no tag at all. Absent reports take the same
+    # path, so an untagged promotion means exactly one thing.
+    if not payload.get("triggered"):
+        return {}
+    tags: dict[str, str] = {}
+    reason = payload.get("reason")
+    if reason:
+        tags["trigger_reason"] = str(reason)
+    when = payload.get("date")
+    if when:
+        tags["trigger_date"] = str(when)
+    worst = (payload.get("psi") or {}).get("worst") or {}
+    if worst.get("drift_score") is not None:
+        tags["trigger_psi"] = str(worst["drift_score"])
+    if worst.get("column"):
+        tags["trigger_psi_column"] = str(worst["column"])
+    return tags
+
+
+def apply_trigger_tags(
+    client: RegistryClient, version: str, tags: dict[str, str]
+) -> list[str]:
+    """Stamp the trigger provenance onto a registered version.
+
+    Returns the keys that stuck. Each tag is attempted independently: a single
+    rejection must not abort the rest, and the caller records what landed.
+    """
+    applied: list[str] = []
+    for key, value in tags.items():
+        try:
+            client.set_model_version_tag(_MODEL, version, key, value)
+            applied.append(key)
+        except Exception as error:  # noqa: BLE001 - best-effort provenance
+            logger.warning(f"Could not set {key} on version {version}: {error}")
+    return applied
+
+
 def report_path(cfg: Config, version: str) -> Path:
     return cfg.report_dir / f"promotion_{version}.json"
 
@@ -708,6 +782,7 @@ def build_payload(
     promoted: bool,
     previous_production: str | None,
     dry_run: bool = False,
+    trigger_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     failed = [gate.name for gate in gates if not gate.passed]
     if promoted:
@@ -734,6 +809,10 @@ def build_payload(
         "promoted": promoted,
         "decision": decision,
         "promotion_blocked_reason": blocked_reason,
+        # Which Phase 6 step 3 trigger tags actually landed on the version. Empty
+        # is normal (no trigger report, or a dry run) and is why this records
+        # what stuck rather than what was attempted.
+        "trigger_tags_applied": trigger_tags or [],
         "dry_run": dry_run,
         "failed_gates": failed,
         "gates": [gate.as_dict() for gate in gates],
@@ -879,9 +958,14 @@ def promote(
     gates = evaluate_all_gates(cfg, candidate, production, baseline)
     passed = all(gate.passed for gate in gates)
     promoted = False
+    trigger_tags: list[str] = []
     if passed and client is not None and not dry_run:
         client.set_registered_model_alias(_MODEL, _ALIAS_PRODUCTION, version)
         promoted = True
+        # Provenance for *why* this version exists, stamped only once the alias
+        # has actually moved -- a rejected candidate is not part of the served
+        # history, so tagging it would imply a promotion that did not happen.
+        trigger_tags = apply_trigger_tags(client, version, trigger_version_tags(cfg))
     elif passed and dry_run:
         # The measuring job must not be able to promote. This is the whole
         # reason --dry-run is a separate flag from --skip-registry: the
@@ -900,6 +984,7 @@ def promote(
         promoted,
         previous_production,
         dry_run=dry_run,
+        trigger_tags=trigger_tags,
     )
     return Decision(promoted=promoted, gates=gates, payload=payload)
 

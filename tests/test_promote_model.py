@@ -47,6 +47,8 @@ from promote_model import (
     promote,
     read_parity,
     report_path,
+    trigger_report_path,
+    trigger_version_tags,
     write_report,
 )
 
@@ -136,6 +138,10 @@ class FakeRegistry:
         self.production = production
         self.calls: list[tuple] = []
         self.aliases: dict[str, str] = {"Production": production} if production else {}
+        # Phase 6 step 3 provenance: tag writes are recorded separately from
+        # alias moves so a test can assert the Production flip happened *and*
+        # the trigger reason was stamped.
+        self.tags: dict[tuple[str, str], dict[str, str]] = {}
 
     def get_model_version_by_alias(self, name: str, alias: str) -> str | None:
         self.calls.append(("get", name, alias))
@@ -146,6 +152,15 @@ class FakeRegistry:
     def set_registered_model_alias(self, name: str, alias: str, version: str) -> None:
         self.calls.append(("set", name, alias, version))
         self.aliases[alias] = version
+
+    def set_model_version_tag(
+        self, name: str, version: str, key: str, value: str
+    ) -> None:
+        self.calls.append(("tag", name, version, key, value))
+        self.tags.setdefault((name, version), {})[key] = value
+
+    def tags_for(self, version: str) -> dict[str, str]:
+        return dict(self.tags.get(("ArabicSentiment", version), {}))
 
     def sets(self, alias: str) -> list[str]:
         return [call[3] for call in self.calls if call[0] == "set" and call[2] == alias]
@@ -896,6 +911,97 @@ def test_candidate_alias_is_set_before_evaluation(cfg: Config) -> None:
     promote(cfg, "7", CAND_ONNX, PROD_ONNX, client=registry)
     aliases = [call[2] for call in registry.calls if call[0] == "set"]
     assert aliases == ["Candidate", "Production"]
+
+
+# --- Phase 6 step 3: trigger provenance on the promoted version --------------
+
+
+def _write_trigger(cfg: Config, day: str = "2026-10-01", **over: object) -> None:
+    payload = {
+        "date": day,
+        "reason": "psi_breach",
+        "triggered": True,
+        "psi": {
+            "fired": True,
+            "worst": {"drift_score": 0.44, "column": "positive"},
+        },
+        "calendar": {"fired": False},
+    }
+    payload.update(over)
+    directory = cfg.report_dir / "retrain_trigger"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{day}.json").write_text(json.dumps(payload))
+
+
+def test_trigger_version_tags_read_the_latest_report(cfg: Config) -> None:
+    _write_trigger(cfg, "2026-09-30", reason="scheduled")
+    _write_trigger(cfg, "2026-10-01", reason="psi_breach")
+    tags = trigger_version_tags(cfg)
+    assert tags["trigger_reason"] == "psi_breach"
+    assert tags["trigger_date"] == "2026-10-01"
+    assert tags["trigger_psi"] == "0.44"
+    assert tags["trigger_psi_column"] == "positive"
+
+
+def test_trigger_version_tags_absent_is_empty(cfg: Config) -> None:
+    assert trigger_report_path(cfg) is None
+    assert trigger_version_tags(cfg) == {}
+
+
+def test_a_clean_night_report_does_not_tag_the_version(cfg: Config) -> None:
+    # `reason: none` is a non-trigger. Tagging it would assert a drift-motivated
+    # promotion that never happened, so it must yield no tags -- the same as an
+    # absent report.
+    _write_trigger(cfg, reason="none", triggered=False, psi={"fired": False})
+    assert trigger_version_tags(cfg) == {}
+
+
+def test_unreadable_trigger_report_yields_no_tags(cfg: Config) -> None:
+    _write_trigger(cfg)
+    path = trigger_report_path(cfg)
+    assert path is not None
+    path.write_text("{ not json")
+    assert trigger_version_tags(cfg) == {}
+
+
+def test_promotion_stamps_the_trigger_reason_on_the_version(cfg: Config) -> None:
+    _write_trigger(cfg)
+    patch_eval(metrics(f1_macro=0.6450))
+    registry = FakeRegistry(production="4")
+    decision = promote(cfg, "7", CAND_ONNX, PROD_ONNX, client=registry)
+    assert decision.promoted
+    tags = registry.tags_for("7")
+    assert tags["trigger_reason"] == "psi_breach"
+    assert decision.payload["trigger_tags_applied"]
+    assert "trigger_reason" in decision.payload["trigger_tags_applied"]
+
+
+def test_a_rejected_candidate_is_never_tagged(cfg: Config) -> None:
+    # Tags describe served history; a version that never moved must not be
+    # stamped as if it had.
+    _write_trigger(cfg)
+    patch_eval(metrics(f1_macro=0.30, accuracy=0.60))
+    registry = FakeRegistry(production="4")
+    decision = promote(cfg, "7", CAND_ONNX, PROD_ONNX, client=registry)
+    assert not decision.promoted
+    assert registry.tags_for("7") == {}
+
+
+def test_dry_run_does_not_stamp_tags(cfg: Config) -> None:
+    _write_trigger(cfg)
+    patch_eval(metrics(f1_macro=0.6450))
+    registry = FakeRegistry(production="4")
+    promote(cfg, "7", CAND_ONNX, PROD_ONNX, client=registry, dry_run=True)
+    assert registry.tags_for("7") == {}
+
+
+def test_promotion_without_a_trigger_report_is_untagged(cfg: Config) -> None:
+    patch_eval(metrics(f1_macro=0.6450))
+    registry = FakeRegistry(production="4")
+    decision = promote(cfg, "7", CAND_ONNX, PROD_ONNX, client=registry)
+    assert decision.promoted
+    assert registry.tags_for("7") == {}
+    assert decision.payload["trigger_tags_applied"] == []
 
 
 def test_failed_candidate_never_reaches_production(cfg: Config) -> None:

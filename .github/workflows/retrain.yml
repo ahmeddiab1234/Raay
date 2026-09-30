@@ -14,10 +14,12 @@ on:
     - cron: "12 4 * * 1"
   workflow_dispatch:
   repository_dispatch:
-    # Seam for the future drift-alert producer (declared "later" in Step 6):
-    # the nightly PSI job can fire event_type `retrain` with an optional
-    # client_payload.threshold to tighten/loosen this run. Receiver only -- no
-    # producer exists in the repo yet.
+    # Receiver for the Phase 6 step 3 producer: the nightly Airflow job
+    # (raay.inference.retrain_trigger) fires event_type `retrain` with
+    # client_payload {reason, threshold, trigger_date, psi, psi_column, triage}.
+    # `threshold` tightens/loosens this refresh run; the rest is read by the
+    # `notify` job below. The producer's POST needs a host PAT and is the one
+    # step not yet implemented -- the `notify` receiver is.
     types: [retrain]
 
 # GitHub schedules cron only from the DEFAULT branch (main), so this workflow
@@ -25,10 +27,12 @@ on:
 # changes land on dev by PR, then reach main via the normal fast-forward.
 #
 # contents: write is needed to push the data-refresh branch; pull-requests:
-# write to open the PR on dev. This is the only write the workflow performs.
+# write to open the PR on dev. issues: write is used only by the Phase 6
+# step 3 notify job below, never by the refresh job.
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 # A refresh either has already been fetched by a previous run (idempotent no-op)
 # or is mid-flight; never interleave two runs.
@@ -191,3 +195,91 @@ jobs:
             cat "reports/data_refresh_$date.md" 2>/dev/null || echo "no new data to report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Phase 6 step 3 -- the drift-alert receiver that finally has a producer.
+  #
+  # Deliberately a SEPARATE job, not a branch through `refresh`. On a psi_breach
+  # the raw data is by definition unchanged (the world moved, not the corpus), so
+  # the refresh job's own `dvc.lock` early-exit is correct and its body is a
+  # no-op. Letting a breach through that exit instead would reach
+  # `git commit` with nothing staged and fail the job -- so the early exit is
+  # left alone and this job does the part the refresh job cannot.
+  #
+  # It records the recommendation; it does not retrain. Fine-tuning needs a GPU
+  # and runs in scripts/kaggle_train_runs.py on Kaggle, and only
+  # scripts/promote_model.py may move the Production alias.
+  notify:
+    name: record the retrain trigger
+    # Only a dispatch carries a reason; a schedule run has no drift evidence.
+    if: github.event_name == 'repository_dispatch'
+    needs: refresh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+
+      - name: Read the trigger payload
+        id: payload
+        env:
+          REASON: ${{ github.event.client_payload.reason }}
+          TRIGGER_DATE: ${{ github.event.client_payload.trigger_date }}
+          PSI: ${{ github.event.client_payload.psi }}
+          COLUMN: ${{ github.event.client_payload.psi_column }}
+          TRIAGE: ${{ github.event.client_payload.triage }}
+          REPO_URL: ${{ github.event.client_payload.source_report }}
+        run: |
+          {
+            echo "reason=${REASON:-unknown}"
+            echo "trigger_date=${TRIGGER_DATE:-unknown}"
+            echo "psi=${PSI:-unknown}"
+            echo "column=${COLUMN:-unknown}"
+            echo "triage=${TRIAGE:-unknown}"
+            echo "source=${REPO_URL:-unknown}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open the retrain-candidate issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REASON: ${{ steps.payload.outputs.reason }}
+          TRIGGER_DATE: ${{ steps.payload.outputs.trigger_date }}
+          PSI: ${{ steps.payload.outputs.psi }}
+          COLUMN: ${{ steps.payload.outputs.column }}
+          TRIAGE: ${{ steps.payload.outputs.triage }}
+          SOURCE: ${{ steps.payload.outputs.source }}
+        run: |
+          set -euo pipefail
+          title="Retrain candidate: $REASON on $TRIGGER_DATE"
+          # Idempotent: a retried dispatch must not stack duplicate issues.
+          # gh issue list is a single API call and this runs at most once a day.
+          if gh issue list --state all --search "$title in:title" --limit 1 \
+              --json number | grep -q '"number"'; then
+            echo "::notice::Issue for '$title' already exists; nothing to do."
+            exit 0
+          fi
+          {
+            echo "The nightly drift gate fired with reason \`$REASON\` on $TRIGGER_DATE."
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| worst column | \`$COLUMN\` |"
+            echo "| PSI | \`$PSI\` |"
+            echo "| triage | \`$TRIAGE\` |"
+            echo "| source report | $SOURCE |"
+            echo ""
+            echo "## What this does *not* do"
+            echo ""
+            echo "No retraining has run. Fine-tuning needs a GPU and happens in"
+            echo "\`scripts/kaggle_train_runs.py\` on Kaggle; only"
+            echo "\`scripts/promote_model.py\` may move the \`Production\` alias."
+            echo ""
+            echo "**Next step for a human:** start the Kaggle sweep, register the"
+            echo "candidate, then run the promotion gate."
+          } > /tmp/retrain-body.md
+          # No --label: a missing label would fail the run, and the title
+          # prefix is already the machine-readable marker the idempotency
+          # search above keys on.
+          gh issue create \
+            --title "$title" \
+            --body-file /tmp/retrain-body.md
