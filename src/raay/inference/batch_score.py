@@ -23,12 +23,23 @@ Modes
 - ``drift``: Evidently PSI (``ColumnDriftMetric`` + ``psi_stat_test``) on the
   current day vs the reference; each column is PASS (<0.1) / WARN (<0.2) /
   FAIL (>=0.2) and the verdicts are written to ``reports/drift/{date}.json``.
+- ``predict-drift``: Phase 6 step 2 -- watches the **outputs** rather than the
+  inputs (see :mod:`raay.inference.prediction_drift`): the predicted class mix
+  PSI'd against the training label prior, mean confidence as a series, and a
+  triage classification pairing this verdict with the same day's input-drift
+  verdict. Writes ``reports/prediction_drift/{date}.json``.
 
 Phase 6 step 1 extended the drift columns from the model's own outputs
 (``predicted_label``, ``positive``) to the **inputs** as well: AraBERT
 embedding principal components, the ``[UNK]`` rate, the dialect mix, review
 length and confidence. Those come from ``raay.inference.drift_features`` and
 need the fine-tuned encoder, so they are opt-out via ``--no-engineer``.
+
+Phase 6 step 2 splits the two directions apart. ``drift`` is the input side;
+``predict-drift`` is the output side and ends in a triage verdict, because the
+useful question when something moves is *which half moved* -- a class-mix shift
+with the inputs steady points at the model, and the same shift with the inputs
+moving points at the world. Both are report-only and never fail the job.
 
 The report is a list of per-column ``ColumnDriftMetric``s rather than an
 Evidently ``DataDriftPreset``: a preset reports one dataset-level score and
@@ -73,7 +84,13 @@ from loguru import logger
 from transformers import AutoConfig, AutoTokenizer
 
 from raay.config.env import load_environment, mlflow_tracking_uri
-from raay.enums.constants import DataColumns, DefaultPaths, Experiments, Models
+from raay.enums.constants import (
+    LABELS,
+    DataColumns,
+    DefaultPaths,
+    Experiments,
+    Models,
+)
 from raay.inference.drift_features import (
     COL_CONFIDENCE,
     COL_DIALECT_LABEL,
@@ -203,13 +220,25 @@ def score_input(
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
     logger.info(f"Scored {n} reviews in {elapsed:.2f}s -> {out_csv}")
-    prop = df["predicted_label"].value_counts().to_dict()
+    # `value_counts()` omits a class no row happened to get, which would
+    # silently drop Neutral from the record on a day the model predicted it
+    # never occurs. Zero-filled so every day has the same shape.
+    counts = df["predicted_label"].value_counts()
+    n = len(df)
     return {
         "n_reviews": n,
         "elapsed_sec": elapsed,
         "batch_size": scorer.batch_size,
         "label_columns": cols,
-        "class_proportions": {k: int(v) for k, v in prop.items()},
+        # Named for what they are: these were counts under a "proportions"
+        # key, which is the kind of thing that gets charted as if it were a
+        # percentage. Phase 6 step 2 owns the proper share/PSI tracking.
+        "predicted_class_counts": {
+            label: int(counts.get(label, 0)) for label in LABELS
+        },
+        "predicted_class_proportions": {
+            label: round(float(counts.get(label, 0)) / n, 6) for label in LABELS
+        },
         "target_label": target_label,
     }
 
@@ -585,7 +614,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=["make-input", "score", "init-reference", "drift"],
+        choices=["make-input", "score", "init-reference", "drift", "predict-drift"],
         default="score",
     )
     parser.add_argument("--date", default=None, help="YYYY-MM-DD (default today)")
@@ -638,6 +667,38 @@ def main() -> None:
         default=None,
         help="Comma-separated override of the gated columns.",
     )
+    parser.add_argument(
+        "--train-prior",
+        default=DefaultPaths.TRAIN_SPLIT.value,
+        help=(
+            "Label prior for the Phase-6-step-2 class-distribution PSI. Read "
+            "from the train split's labels rather than hardcoded, because the "
+            "brief's 45/35/20 does not describe this dataset (it is "
+            "57.6/37.3/5.1) and fails a clean panel at PSI 0.41."
+        ),
+    )
+    parser.add_argument(
+        "--predict-drift-out",
+        default=None,
+        help="Prediction-drift report path (default reports/prediction_drift).",
+    )
+    parser.add_argument(
+        "--input-drift-report",
+        default=None,
+        help="Input-drift report to pair with for triage (default reports/drift).",
+    )
+    parser.add_argument(
+        "--history-window",
+        type=int,
+        default=14,
+        help="Days of confidence history in the rolling baseline.",
+    )
+    parser.add_argument(
+        "--min-history-days",
+        type=int,
+        default=7,
+        help="Days of history before the rolling z-score is reported.",
+    )
     args = parser.parse_args()
 
     load_environment()
@@ -650,6 +711,9 @@ def main() -> None:
     )
     stats_json = args.report_out or f"reports/batch_score_{day}.json"
     drift_json = args.drift_out or f"reports/drift/{day}.json"
+    predict_drift_json = args.predict_drift_out or str(
+        Path(DefaultPaths.PREDICTION_DRIFT_REPORTS.value) / f"{day}.json"
+    )
     scorer = Scorer(
         onnx_path=args.onnx_path,
         tokenizer_dir=args.tokenizer_dir,
@@ -733,6 +797,53 @@ def main() -> None:
                 [(f"score/{day}", output_csv), ("stats_today", stats_json)],
                 "score",
             )
+        return
+
+    # Imported here, not at module scope: prediction_drift imports the PSI
+    # helper from this module, so a top-level import in both directions closes
+    # a cycle. Same lazy-import idiom already used for evidently above.
+    from raay.inference.prediction_drift import (
+        PredictionDriftSpec,
+        mlflow_metrics,
+        predict_drift_check,
+    )
+
+    if args.mode == "predict-drift":
+        report = predict_drift_check(
+            PredictionDriftSpec(
+                current_csv=args.current or output_csv,
+                reference_csv=args.reference,
+                train_prior_csv=args.train_prior,
+                input_drift_report=(
+                    args.input_drift_report
+                    if args.input_drift_report is not None
+                    else str(Path(DefaultPaths.DRIFT_REPORTS.value) / f"{day}.json")
+                ),
+                history_dir=DefaultPaths.PREDICTION_DRIFT_REPORTS.value,
+                day=day,
+                window=args.history_window,
+                min_days=args.min_history_days,
+            )
+        )
+        Path(predict_drift_json).parent.mkdir(parents=True, exist_ok=True)
+        with open(predict_drift_json, "w") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        logger.info(
+            f"Prediction drift check {report['output_drift']['overall']}: "
+            f"triage={report['triage']} "
+            f"psi_vs_prior={report['class_distribution']['psi_vs_training_prior']['drift_score']} "
+            f"mean_confidence={report['confidence']['mean']}"
+        )
+        if not args.no_mlflow:
+            _log_run(
+                f"predict-drift-{day}",
+                mlflow_metrics(report),
+                [("prediction_drift", predict_drift_json)],
+                "predict-drift",
+            )
+        # Report-only by design: like --mode drift it never fails the job, so
+        # the Airflow task cannot start red-flagging nights nobody wired up an
+        # alerting path for.
         return
 
     drift_columns_override = (

@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-02",
+  "n_current": 1000,
+  "n_reference": 1000,
+  "thresholds": {
+    "warn": 0.1,
+    "fail": 0.2
+  },
+  "class_distribution": {
+    "current": {
+      "positive": 0.601,
+      "negative": 0.375,
+      "neutral": 0.024
+    },
+    "reference_panel": {
+      "positive": 0.589,
+      "negative": 0.387,
+      "neutral": 0.024
+    },
+    "training_prior": {
+      "positive": 0.575998,
+      "negative": 0.373311,
+      "neutral": 0.050692
+    },
+    "training_prior_source": "data/processed/train.csv",
+    "share_delta_pp_vs_prior": {
+      "positive": 2.5,
+      "negative": 0.169,
+      "neutral": -2.669
+    },
+    "share_delta_pp_vs_reference": {
+      "positive": 1.2,
+      "negative": -1.2,
+      "neutral": 0.0
+    },
+    "psi_vs_training_prior": {
+      "drift_score": 0.021,
+      "decision": "PASS",
+      "stattest": "PSI",
+      "stattest_threshold": 0.1
+    },
+    "psi_vs_reference_panel": {
+      "drift_score": 0.0006,
+      "decision": "PASS",
+      "stattest": "PSI",
+      "stattest_threshold": 0.1
+    }
+  },
+  "confidence": {
+    "mean": 0.911694,
+    "reference_mean": 0.918807,
+    "delta_vs_reference": -0.007113,
+    "falling": true,
+    "z_score": null,
+    "rolling": {
+      "window": 14,
+      "n_days": 1,
+      "min_days": 7,
+      "sufficient_history": false,
+      "mean": 0.916827,
+      "std": 0.0,
+      "z_score": null,
+      "reason": "need >= 7 days, have 1"
+    },
+    "history_n_days": 1
+  },
+  "output_drift": {
+    "overall": "PASS",
+    "basis": "class distribution vs the training label prior"
+  },
+  "input_drift": {
+    "overall": "PASS",
+    "source": "reports/drift/2026-10-02.json"
+  },
+  "triage": "stable",
+  "escalate": false,
+  "caveat": "Both panels are seeded draws from data/processed/test.csv, so the input/output attribution is unverified against production traffic."
+}

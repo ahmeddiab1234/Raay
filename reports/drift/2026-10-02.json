@@ -1,0 +1,222 @@
+{
+  "date": "2026-10-02",
+  "thresholds": {
+    "warn": 0.1,
+    "fail": 0.2
+  },
+  "reference": "data/scoring/reference/reference_engineered.csv",
+  "current": "data/scoring/output/2026-10-02_engineered.csv",
+  "n_reference": 1000,
+  "n_current": 1000,
+  "columns": {
+    "predicted_label": {
+      "drift_score": 0.0006,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "positive": {
+      "drift_score": 0.0266,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "confidence_score": {
+      "drift_score": 0.0546,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "text_length": {
+      "drift_score": 0.0064,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "oov_bucket": {
+      "drift_score": 0.0041,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "oov_rate": {
+      "drift_score": null,
+      "stattest": "PSI",
+      "stattest_threshold": null,
+      "drift_detected": null,
+      "decision": "SKIPPED",
+      "reason": "reference std 0.000e+00 is below 1e-08, so the column has no spread to bin or to drift in",
+      "reference_std": 0.0
+    },
+    "dialect_label": {
+      "drift_score": 0.0064,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc1": {
+      "drift_score": 0.0155,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc2": {
+      "drift_score": 0.0197,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc3": {
+      "drift_score": 0.023,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc4": {
+      "drift_score": 0.0151,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc5": {
+      "drift_score": 0.0392,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc6": {
+      "drift_score": 0.023,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc7": {
+      "drift_score": 0.0185,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc8": {
+      "drift_score": 0.0126,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc9": {
+      "drift_score": 0.0174,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "embedding_pc10": {
+      "drift_score": 0.0228,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    }
+  },
+  "n_columns_checked": 16,
+  "skipped_columns": [],
+  "uncomparable_columns": [
+    "oov_rate"
+  ],
+  "errored_columns": [],
+  "drift_share": 0.0,
+  "overall": "PASS",
+  "engineered": true,
+  "reference_from_cache": true,
+  "projection": {
+    "n_components": 10,
+    "requested_components": 10,
+    "explained_variance_ratio": [
+      0.7146,
+      0.116,
+      0.0376,
+      0.0197,
+      0.0097,
+      0.0075,
+      0.0055,
+      0.0052,
+      0.0034,
+      0.003
+    ],
+    "explained_variance_total": 0.9223,
+    "encoder_dir": "models/baseline/final",
+    "model_name": "aubmindlab/bert-base-arabertv02",
+    "max_length": 128,
+    "pooling": "mean",
+    "n_reference": 1000
+  },
+  "feature_means": {
+    "text_length": 53.952,
+    "confidence_score": 0.911694,
+    "oov_rate": 8.9e-05
+  },
+  "oov_bucket_mix": {
+    "none": 0.998,
+    "low": 0.001,
+    "high": 0.001
+  },
+  "dialect_mix": {
+    "column": "dialect_label",
+    "reference": {
+      "msa": 0.449,
+      "levantine": 0.165,
+      "gulf": 0.147,
+      "egyptian": 0.141,
+      "maghrebi": 0.053,
+      "arabizi": 0.045
+    },
+    "current": {
+      "msa": 0.444,
+      "levantine": 0.165,
+      "gulf": 0.16,
+      "egyptian": 0.152,
+      "maghrebi": 0.045,
+      "arabizi": 0.034
+    },
+    "shares": {
+      "arabizi": {
+        "reference": 0.045,
+        "current": 0.034
+      },
+      "egyptian": {
+        "reference": 0.141,
+        "current": 0.152
+      },
+      "gulf": {
+        "reference": 0.147,
+        "current": 0.16
+      },
+      "levantine": {
+        "reference": 0.165,
+        "current": 0.165
+      },
+      "maghrebi": {
+        "reference": 0.053,
+        "current": 0.045
+      },
+      "msa": {
+        "reference": 0.449,
+        "current": 0.444
+      }
+    },
+    "total_variation": 0.024
+  }
+}

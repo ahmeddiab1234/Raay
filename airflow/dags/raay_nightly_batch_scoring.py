@@ -10,7 +10,10 @@ raay project venv via ``uv run``:
    batches -> data/scoring/output/{{ ds }}.csv; logs to the ``raay_batch``
    MLflow experiment;
 3. ``run_drift_check``          -- Evidently PSI (predicted_label, positive)
-   vs data/scoring/reference/reference.csv -> reports/drift/{{ ds }}.json.
+   vs data/scoring/reference/reference.csv -> reports/drift/{{ ds }}.json;
+4. ``run_prediction_drift_check`` -- Phase 6 step 2: the predicted class mix vs
+   the training label prior, mean confidence, and a triage verdict pairing this
+   output-side signal with task 3 -> reports/prediction_drift/{{ ds }}.json.
 
 The DAG itself is thin and stateless on purpose: Airflow owns retries /
 scheduling / logs; the heavy lifting stays in the tested batch_score module.
@@ -64,4 +67,12 @@ with DAG(
         task_id="run_drift_check",
         bash_command=step("drift"),
     )
-    materialize >> score >> drift
+    # Phase 6 step 2. Deliberately `>>` the input-drift check: this task reads
+    # `reports/drift/{{ ds }}.json` to decide whether a class-mix shift came
+    # from the inputs or the model, so running it first would classify the day
+    # "indeterminate" on every run.
+    predict_drift = BashOperator(
+        task_id="run_prediction_drift_check",
+        bash_command=step("predict-drift"),
+    )
+    materialize >> score >> drift >> predict_drift

@@ -59,6 +59,9 @@ class DefaultPaths(str, Enum):
     SCORING_REFERENCE_ENGINEERED = "data/scoring/reference/reference_engineered.csv"
     DRIFT_PCA_BASIS = "data/scoring/reference/pca_basis.joblib"
     DRIFT_REPORTS = "reports/drift"
+    # Phase 6 step 2 (prediction drift) writes its own report family so the
+    # output-side verdict is readable without parsing the input-side one.
+    PREDICTION_DRIFT_REPORTS = "reports/prediction_drift"
     ONNX_DIR = "models/onnx"
     ONNX_MODEL = "models/onnx/model.onnx"
     ONNX_DISTILLED = "models/onnx/distilled.onnx"
@@ -90,6 +93,13 @@ class DataColumns(str, Enum):
     LABEL = "label"
     DIALECT = "dialect"
     TEXT_LENGTH = "text_length"
+
+
+#: The sentiment classes, in the id2label order the ONNX graphs use.
+#: Lives here rather than beside either consumer: ``batch_score`` and
+#: ``prediction_drift`` both need it and they already reference each other, so
+#: a third module is the only placement that cannot close an import cycle.
+LABELS: tuple[str, ...] = ("positive", "negative", "neutral")
 
 
 class SplitNames(str, Enum):
