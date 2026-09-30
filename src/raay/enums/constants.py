@@ -52,6 +52,12 @@ class DefaultPaths(str, Enum):
     SCORING_INPUT = "data/scoring/input"
     SCORING_OUTPUT = "data/scoring/output"
     SCORING_REFERENCE = "data/scoring/reference/reference.csv"
+    # Engineered (embedding/OOV/dialect) copy of the reference panel, and the
+    # PCA basis frozen on it. Git-ignored with the rest of data/**: rebuild both
+    # with `--mode init-reference`. The basis is never refit per day, otherwise
+    # the axes rotate under the comparison.
+    SCORING_REFERENCE_ENGINEERED = "data/scoring/reference/reference_engineered.csv"
+    DRIFT_PCA_BASIS = "data/scoring/reference/pca_basis.joblib"
     DRIFT_REPORTS = "reports/drift"
     ONNX_DIR = "models/onnx"
     ONNX_MODEL = "models/onnx/model.onnx"

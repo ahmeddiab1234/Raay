@@ -16,25 +16,44 @@ Modes
   ``data/scoring/output/{date}.csv`` with per-class probabilities, the argmax
   label and its score. Enforces the ``--min-samples`` (default 1000) floor.
 - ``init-reference``: build the drift reference once by scoring a seeded slice
-  of the pool into ``data/scoring/reference/reference.csv``.
+  of the pool into ``data/scoring/reference/reference.csv``. It then writes two
+  more artifacts: ``reference_engineered.csv`` (the reference plus the Phase-6
+  engineered input features) and ``pca_basis.joblib`` (the PCA projection
+  frozen on the reference embeddings).
 - ``drift``: Evidently PSI (``ColumnDriftMetric`` + ``psi_stat_test``) on the
-  ``predicted_label`` and ``positive`` columns of the current day vs the
-  reference; each column is PASS (<0.1) / WARN (<0.2) / FAIL (>=0.2) and the
-  verdicts are written to ``reports/drift/{date}.json``.
+  current day vs the reference; each column is PASS (<0.1) / WARN (<0.2) /
+  FAIL (>=0.2) and the verdicts are written to ``reports/drift/{date}.json``.
+
+Phase 6 step 1 extended the drift columns from the model's own outputs
+(``predicted_label``, ``positive``) to the **inputs** as well: AraBERT
+embedding principal components, the ``[UNK]`` rate, the dialect mix, review
+length and confidence. Those come from ``raay.inference.drift_features`` and
+need the fine-tuned encoder, so they are opt-out via ``--no-engineer``.
+
+The report is a list of per-column ``ColumnDriftMetric``s rather than an
+Evidently ``DataDriftPreset``: a preset reports one dataset-level score and
+per-column detail only for a handful of auto-detected columns, and this job
+needs a separate PASS/WARN/FAIL verdict plus a PSI for *each* of the 16
+engineered features. Per-column metrics are what makes that possible; the
+preset would only add ``drift_share``, which is computed directly here.
 
 Every run also logs params/metrics/artifacts to the ``raay_batch`` MLflow
 experiment (unless ``--no-mlflow``).
 
 Run (from the repo root any of these):
 
+    uv run python -m raay.inference.batch_score --mode init-reference --samples 2000
     uv run python -m raay.inference.batch_score --mode make-input --date 2026-09-24
     uv run python -m raay.inference.batch_score --mode score --date 2026-09-24
     uv run python -m raay.inference.batch_score --mode drift --date 2026-09-24
-    uv run python -m raay.inference.batch_score --mode init-reference --samples 2000
+
+``init-reference`` is a setup step, not a nightly one (the Airflow DAG runs the
+other three): the reference and its PCA basis are frozen on purpose.
 
 Honest caveat: the pool is a single dataset, so real-world PSI drift will be ~0
 by construction; the mechanism (and the Phase-5 monitoring hook it provides) is
-the deliverable.
+the deliverable. The engineered columns do not escape this -- they compare
+slices of one corpus, not production traffic.
 """
 
 from __future__ import annotations
@@ -54,7 +73,22 @@ from loguru import logger
 from transformers import AutoConfig, AutoTokenizer
 
 from raay.config.env import load_environment, mlflow_tracking_uri
-from raay.enums.constants import DefaultPaths, Experiments, Models
+from raay.enums.constants import DataColumns, DefaultPaths, Experiments, Models
+from raay.inference.drift_features import (
+    COL_CONFIDENCE,
+    COL_DIALECT_LABEL,
+    COL_OOV_BUCKET,
+    COL_OOV_RATE,
+    COL_TEXT_LENGTH,
+    DriftFeatureBuilder,
+    ProjectionBasis,
+    default_drift_columns,
+    dialect_mix,
+    dialect_total_variation,
+    feature_means,
+    load_basis,
+    save_basis,
+)
 from raay.serving.serve import predict_probs
 
 
@@ -180,16 +214,220 @@ def score_input(
     }
 
 
+@dataclass(frozen=True)
+class EngineeredDriftSpec:
+    """Everything the drift check needs to add the engineered input features.
+
+    Bundled into one object (and injected as ``None`` for the legacy path)
+    rather than threaded through six parameters: ``drift_check`` has to keep
+    working byte-identically when the features are off, which is what the
+    existing unit tests exercise, and a boolean flag is the easy way to
+    accidentally flip that default later.
+    """
+
+    builder: DriftFeatureBuilder
+    pca_path: str
+    reference_engineered: str
+    current_engineered: str
+
+    @property
+    def n_components(self) -> int:
+        return self.builder.n_components
+
+
 def init_reference(
     pool_csv: str,
     samples: int,
     out_csv: str,
     scorer: Scorer,
+    engineered: EngineeredDriftSpec | None = None,
 ) -> pd.DataFrame:
-    """Score a fixed slice of the pool once; the drift reference for all days."""
+    """Score a fixed slice of the pool once; the drift reference for all days.
+
+    With ``engineered``, also embeds the reference, fits the PCA basis on those
+    embeddings and writes the engineered reference panel. The basis is fitted
+    here and only here -- it is the reference distribution's projection, and
+    refitting it per day would rotate the axes under the comparison.
+    """
     make_input(pool_csv, "reference", samples, out_csv, seed=0)
     score_input(out_csv, out_csv, scorer, min_samples=1)
-    return pd.read_csv(out_csv)
+    frame = pd.read_csv(out_csv)
+    if engineered is None:
+        return frame
+    embeddings = engineered.builder.embed(frame)
+    basis = engineered.builder.fit_basis(embeddings)
+    save_basis(basis, engineered.pca_path)
+    featured = engineered.builder.engineer(frame, basis, embeddings)
+    Path(engineered.reference_engineered).parent.mkdir(parents=True, exist_ok=True)
+    featured.to_csv(engineered.reference_engineered, index=False)
+    logger.info(
+        f"Wrote engineered reference ({len(featured)} rows, "
+        f"{basis.n_components} PCs) to {engineered.reference_engineered}"
+    )
+    return featured
+
+
+def _engineered_frames(
+    reference_csv: str,
+    current_csv: str,
+    spec: EngineeredDriftSpec,
+) -> tuple[pd.DataFrame, pd.DataFrame, ProjectionBasis, bool]:
+    """Reference/current frames with the engineered columns attached.
+
+    The reference is read from the cached ``reference_engineered.csv`` when it
+    exists (that is the frozen side -- recomputing it nightly would be wasted
+    encoder work and would silently re-derive the basis if the panel changed).
+    Otherwise it is engineered on the fly from the scored reference, which
+    costs a full extra encoder pass but keeps the check runnable against a
+    reference built by an older version.
+
+    Returns ``(ref, cur, basis, from_cache)``. The current frame is always
+    recomputed and written out, because that is the panel a human opens when a
+    gate fails.
+    """
+    basis = load_basis(spec.pca_path)
+    basis.check_compatible(
+        model_dir=spec.builder.model_dir,
+        max_length=spec.builder.max_length,
+        pooling=spec.builder.pooling,
+    )
+    if Path(spec.reference_engineered).exists():
+        ref = pd.read_csv(spec.reference_engineered)
+        from_cache = True
+    else:
+        logger.warning(
+            f"{spec.reference_engineered} is missing; engineering the reference "
+            f"from {reference_csv} on the fly (one extra encoder pass)"
+        )
+        ref = spec.builder.engineer(pd.read_csv(reference_csv), basis)
+        from_cache = False
+    cur = spec.builder.engineer(pd.read_csv(current_csv), basis)
+    Path(spec.current_engineered).parent.mkdir(parents=True, exist_ok=True)
+    cur.to_csv(spec.current_engineered, index=False)
+    logger.info(f"Wrote engineered current panel to {spec.current_engineered}")
+    return ref, cur, basis, from_cache
+
+
+# Below this reference std a numeric column is treated as having no spread at
+# all; see _uncomparable_reason.
+_MIN_COMPARABLE_STD = 1e-8
+
+
+def _uncomparable_reason(reference: pd.Series) -> dict[str, Any] | None:
+    """Why this reference column has no distribution to compare, or ``None``.
+
+    A numeric column whose reference std is below ``_MIN_COMPARABLE_STD`` cannot
+    be binned by Evidently and cannot drift: the tail components of a PCA basis
+    sit at float-noise around the component mean. The threshold is absolute
+    because PCA components of mean-pooled AraBERT embeddings are O(0.1-10), so
+    anything under ``1e-8`` is seven-plus orders of magnitude below the leading
+    components -- numerically indistinguishable from the mean, not a small but
+    real signal.
+
+    Categorical columns are never skipped here: a constant *categorical* column
+    (every row the same dialect) is still a comparable distribution, because
+    Evidently bins categories rather than a value range.
+    """
+    if not pd.api.types.is_numeric_dtype(reference):
+        return None
+    values = reference.dropna()
+    if values.empty:
+        return {"reason": "reference column is entirely NaN", "reference_std": 0.0}
+    std = float(values.std())
+    if std >= _MIN_COMPARABLE_STD:
+        return None
+    return {
+        "reason": (
+            f"reference std {std:.3e} is below {_MIN_COMPARABLE_STD:g}, so the "
+            f"column has no spread to bin or to drift in"
+        ),
+        "reference_std": std,
+    }
+
+
+def _psi_per_column(
+    columns: list[str],
+    ref: pd.DataFrame,
+    cur: pd.DataFrame,
+    thresholds: tuple[float, float],
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
+    """Run PSI one column at a time; a column that cannot be binned is ERRORed.
+
+    Two failure modes, deliberately reported differently:
+
+    **SKIPPED (uncomparable).** The reference column has no usable spread, so
+    there is no distribution to compare. This is not hypothetical: the tail
+    principal components of a PCA basis routinely land at ``~1e-16`` std, i.e.
+    floating-point noise around the component mean, and Evidently's
+    ``numpy.histogram_bin_edges(bins="sturges")`` then raises ``Too many bins
+    for data range``. Gating those would fail the report for a component that
+    by construction cannot move, so they are recorded with their observed std
+    and left out of the severity calculation -- with the number visible, so a
+    reader can see *why* the column was not checked.
+
+    **ERROR (escalates).** Anything else, e.g. a binning failure on a column
+    that does have spread. That is a bug or an unanticipated input shape, and a
+    monitoring gate that silently stops checking a column is worse than one that
+    pages someone, so it is recorded with ``decision: "ERROR"`` and lifts the
+    overall verdict.
+
+    Running per column rather than as one ``Report`` is what makes either
+    outcome survivable: a single exception from the shared report would take
+    down every column, not just the broken one.
+    """
+    from evidently.legacy.calculations.stattests.psi import psi_stat_test
+    from evidently.legacy.metrics import ColumnDriftMetric
+    from evidently.legacy.report import Report
+
+    lo, hi = thresholds
+    verdicts: dict[str, dict[str, Any]] = {}
+    errored: list[str] = []
+    uncomparable: list[str] = []
+    for col in columns:
+        degenerate = _uncomparable_reason(ref[col])
+        if degenerate is not None:
+            logger.warning(
+                f"Skipping drift column {col!r}: {degenerate['reason']} "
+                f"(observed std={degenerate['reference_std']:.3e})"
+            )
+            verdicts[col] = {
+                "drift_score": None,
+                "stattest": "PSI",
+                "stattest_threshold": None,
+                "drift_detected": None,
+                "decision": "SKIPPED",
+                **degenerate,
+            }
+            uncomparable.append(col)
+            continue
+        try:
+            report = Report(
+                metrics=[ColumnDriftMetric(column_name=col, stattest=psi_stat_test)]
+            )
+            report.run(reference_data=ref, current_data=cur)
+            result = report.as_dict()["metrics"][0]["result"]
+            score = float(result["drift_score"])
+            verdicts[col] = {
+                "drift_score": round(score, 4),
+                "stattest": result["stattest_name"],
+                "stattest_threshold": float(result["stattest_threshold"]),
+                "drift_detected": bool(result["drift_detected"]),
+                "decision": "PASS"
+                if score < lo
+                else ("WARN" if score < hi else "FAIL"),
+            }
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+            logger.warning(f"PSI failed for column {col!r}: {exc!r}")
+            verdicts[col] = {
+                "drift_score": None,
+                "stattest": "PSI",
+                "stattest_threshold": None,
+                "drift_detected": None,
+                "decision": "ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            errored.append(col)
+    return verdicts, errored, uncomparable
 
 
 def drift_check(
@@ -198,48 +436,119 @@ def drift_check(
     out_json: str,
     date: str,
     thresholds: tuple[float, float] = (0.1, 0.2),
-    drift_columns: tuple[str, ...] = ("predicted_label", "positive"),
+    drift_columns: tuple[str, ...] | None = None,
+    engineered: EngineeredDriftSpec | None = None,
 ) -> dict[str, Any]:
-    """Evidently PSI drift between reference and a scored day; write verdicts."""
-    from evidently.legacy.calculations.stattests.psi import psi_stat_test
-    from evidently.legacy.metrics import ColumnDriftMetric
-    from evidently.legacy.report import Report
+    """Evidently PSI drift between reference and a scored day; write verdicts.
+
+    With ``engineered`` the comparison widens from the model's outputs to the
+    inputs as well (embedding PCs, ``[UNK]`` rate, dialect mix, length,
+    confidence). Requested columns that are not present in the frames are
+    skipped and named in ``skipped_columns`` rather than being silently
+    dropped or crashing the job -- a clamped PCA basis legitimately has fewer
+    components than requested.
+    """
 
     ref = pd.read_csv(reference_csv)
     cur = pd.read_csv(current_csv)
-    report = Report(
-        metrics=[
-            ColumnDriftMetric(column_name=col, stattest=psi_stat_test)
-            for col in drift_columns
-        ]
-    )
-    report.run(reference_data=ref, current_data=cur)
+    reference_label, current_label = reference_csv, current_csv
+    basis: ProjectionBasis | None = None
+    reference_from_cache = False
+    features_applied = False
+
+    if engineered is not None:
+        if DataColumns.TEXT.value not in ref.columns:
+            # No text means no embeddings, no OOV, no recomputed dialect. Say so
+            # and fall through to the output-only comparison rather than
+            # reporting engineered columns that were never computed.
+            logger.warning(
+                f"{reference_csv} has no 'text' column, so the engineered input "
+                f"features are unavailable; falling back to the output-only "
+                f"drift columns"
+            )
+        else:
+            ref, cur, basis, reference_from_cache = _engineered_frames(
+                reference_csv, current_csv, engineered
+            )
+            reference_label = (
+                engineered.reference_engineered
+                if reference_from_cache
+                else reference_csv
+            )
+            current_label = engineered.current_engineered
+            features_applied = True
+
+    if drift_columns is None:
+        # mypy cannot narrow `engineered` from `features_applied`, so assert the
+        # pairing here rather than reaching through an Optional.
+        drift_columns = (
+            default_drift_columns(engineered.n_components)  # type: ignore[union-attr]
+            if features_applied and engineered is not None
+            else ("predicted_label", "positive")
+        )
+
+    present = [c for c in drift_columns if c in ref.columns and c in cur.columns]
+    skipped = [c for c in drift_columns if c not in present]
+    if skipped:
+        logger.warning(
+            f"Skipping {len(skipped)} drift columns absent from the frames: {skipped}"
+        )
+    if not present:
+        raise ValueError(
+            f"none of the requested drift columns {list(drift_columns)} are present "
+            f"in both {reference_csv} {list(ref.columns)} and {current_csv} "
+            f"{list(cur.columns)}"
+        )
 
     lo, hi = thresholds
-    columns: dict[str, dict[str, Any]] = {}
-    for entry in report.as_dict()["metrics"]:
-        result = entry["result"]
-        col = result["column_name"]
-        score = float(result["drift_score"])
-        decision = "PASS" if score < lo else ("WARN" if score < hi else "FAIL")
-        columns[col] = {
-            "drift_score": round(score, 4),
-            "stattest": result["stattest_name"],
-            "stattest_threshold": float(result["stattest_threshold"]),
-            "drift_detected": bool(result["drift_detected"]),
-            "decision": decision,
-        }
-    severity = {"PASS": 0, "WARN": 1, "FAIL": 2}
-    decisions = [columns[c]["decision"] for c in columns]
-    overall = max(decisions, key=severity.__getitem__)
-    verdict = {
+    columns, errored, uncomparable = _psi_per_column(present, ref, cur, thresholds)
+
+    severity = {"PASS": 0, "WARN": 1, "FAIL": 2, "ERROR": 3}
+    # SKIPPED columns are excluded from the rollup: a column with no reference
+    # spread cannot drift, so letting it into the maximum could only ever
+    # downgrade a real verdict, never upgrade one. If *nothing* was checkable
+    # the rollup is SKIPPED rather than PASS -- a gate that ran no checks must
+    # not report itself healthy.
+    severity_decisions = [
+        columns[c]["decision"] for c in columns if columns[c]["decision"] in severity
+    ]
+    overall = (
+        max(severity_decisions, key=severity.__getitem__)
+        if severity_decisions
+        else "SKIPPED"
+    )
+    checked = [c for c in columns.values() if c["drift_score"] is not None]
+    verdict: dict[str, Any] = {
         "date": date,
         "thresholds": {"warn": lo, "fail": hi},
-        "reference": reference_csv,
-        "current": current_csv,
+        "reference": reference_label,
+        "current": current_label,
+        "n_reference": len(ref),
+        "n_current": len(cur),
         "columns": columns,
+        "n_columns_checked": len(checked),
+        "skipped_columns": skipped,
+        "uncomparable_columns": uncomparable,
+        "errored_columns": errored,
+        "drift_share": round(
+            (sum(1 for c in checked if c["drift_detected"]) / len(checked))
+            if checked
+            else 0.0,
+            4,
+        ),
         "overall": overall,
     }
+    if features_applied:
+        verdict["engineered"] = True
+        verdict["reference_from_cache"] = reference_from_cache
+        if basis is not None:
+            verdict["projection"] = basis.summary()
+        verdict["feature_means"] = feature_means(
+            cur, (COL_TEXT_LENGTH, COL_CONFIDENCE, COL_OOV_RATE)
+        )
+        verdict["oov_bucket_mix"] = dialect_mix(cur, COL_OOV_BUCKET)
+        if COL_DIALECT_LABEL in cur.columns:
+            verdict["dialect_mix"] = dialect_total_variation(ref, cur)
     Path(out_json).parent.mkdir(parents=True, exist_ok=True)
     with open(out_json, "w") as f:
         json.dump(verdict, f, indent=2, ensure_ascii=False)
@@ -294,6 +603,41 @@ def main() -> None:
     parser.add_argument("--max-length", type=int, default=128)
     parser.add_argument("--no-mlflow", action="store_true", help="Skip MLflow logging.")
     parser.add_argument("--report-out", default=None)
+    # Phase 6 step 1: engineered input features (embedding PCs, OOV, dialect).
+    parser.add_argument(
+        "--no-engineer",
+        action="store_true",
+        help=(
+            "Skip the engineered input features and gate only the model outputs "
+            "(predicted_label, positive). Needs no encoder weights."
+        ),
+    )
+    parser.add_argument(
+        "--pca-path",
+        default=DefaultPaths.DRIFT_PCA_BASIS.value,
+        help="Frozen PCA basis fitted by init-reference (never refit per day).",
+    )
+    parser.add_argument(
+        "--reference-engineered",
+        default=DefaultPaths.SCORING_REFERENCE_ENGINEERED.value,
+        help="Cached engineered reference panel written by init-reference.",
+    )
+    parser.add_argument(
+        "--engineered-current",
+        default=None,
+        help="Where to write the engineered current panel (default alongside it).",
+    )
+    parser.add_argument(
+        "--n-pcs", type=int, default=10, help="PCA components kept (10-20 is sane)."
+    )
+    parser.add_argument(
+        "--pooling", choices=["mean", "cls"], default="mean", help="Encoder pooling."
+    )
+    parser.add_argument(
+        "--drift-columns",
+        default=None,
+        help="Comma-separated override of the gated columns.",
+    )
     args = parser.parse_args()
 
     load_environment()
@@ -313,6 +657,32 @@ def main() -> None:
         batch_size=args.batch_size,
     )
 
+    # Built only for the two modes that actually read it. `make-input` samples a
+    # CSV and `score` runs the INT8 graph; neither has any use for the encoder,
+    # and loading it costs ~2 GB of resident weights plus a few seconds that
+    # the nightly Airflow DAG would pay twice per day.
+    needs_features = args.mode in ("init-reference", "drift")
+    engineered: EngineeredDriftSpec | None = None
+    if needs_features and not args.no_engineer:
+        current_csv_for_engineering = args.current or output_csv
+        engineered = EngineeredDriftSpec(
+            builder=DriftFeatureBuilder.from_config(
+                tokenizer_dir=args.tokenizer_dir,
+                n_components=args.n_pcs,
+                max_length=args.max_length,
+                pooling=args.pooling,
+                batch_size=args.batch_size,
+            ),
+            pca_path=args.pca_path,
+            reference_engineered=args.reference_engineered,
+            current_engineered=args.engineered_current
+            or str(
+                Path(current_csv_for_engineering).with_name(
+                    Path(current_csv_for_engineering).stem + "_engineered.csv"
+                )
+            ),
+        )
+
     if args.mode == "make-input":
         make_input(args.pool, day, args.samples, input_csv)
         if not args.no_mlflow:
@@ -325,14 +695,24 @@ def main() -> None:
         return
 
     if args.mode == "init-reference":
-        init_reference(args.pool, args.samples, args.reference, scorer)
+        frame = init_reference(
+            args.pool, args.samples, args.reference, scorer, engineered=engineered
+        )
         if not args.no_mlflow:
-            _log_run(
-                "init-reference",
-                {"n_reference": float(args.samples)},
-                [("reference", args.reference)],
-                "init-reference",
-            )
+            metrics = {"n_reference": float(len(frame))}
+            artifacts: list[tuple[str, str]] = [("reference", args.reference)]
+            if engineered is not None:
+                artifacts += [
+                    ("reference_engineered", engineered.reference_engineered),
+                    ("pca_basis", engineered.pca_path),
+                ]
+                metrics |= {
+                    f"reference_mean_{col}": value
+                    for col, value in feature_means(
+                        frame, (COL_TEXT_LENGTH, COL_OOV_RATE)
+                    ).items()
+                }
+            _log_run("init-reference", metrics, artifacts, "init-reference")
         return
 
     if args.mode == "score":
@@ -355,19 +735,49 @@ def main() -> None:
             )
         return
 
+    drift_columns_override = (
+        tuple(c.strip() for c in args.drift_columns.split(",") if c.strip())
+        if args.drift_columns
+        else None
+    )
     verdict = drift_check(
         args.reference,
         args.current or output_csv,
         drift_json,
         day,
+        drift_columns=drift_columns_override,
+        engineered=engineered,
     )
     if not args.no_mlflow:
-        _log_run(
-            f"drift-{day}",
-            {col: data["drift_score"] for col, data in verdict["columns"].items()},
-            [("drift", drift_json)],
-            "drift",
-        )
+        # Only columns that actually produced a score: an ERRORed column has
+        # drift_score None, and logging a placeholder 0.0 for it would draw a
+        # healthy line on a chart for a check that never ran.
+        metrics = {
+            col: data["drift_score"]
+            for col, data in verdict["columns"].items()
+            if data["drift_score"] is not None
+        }
+        metrics["drift_share"] = verdict["drift_share"]
+        metrics["n_columns_errored"] = float(len(verdict["errored_columns"]))
+        metrics["n_current"] = float(verdict["n_current"])
+        # Trendable input-feature means and mixes, so a rising OOV rate is a
+        # visible series in the raay_batch experiment rather than something you
+        # have to open each JSON to find.
+        metrics |= {
+            f"mean_{col}": value
+            for col, value in verdict.get("feature_means", {}).items()
+        }
+        metrics |= {
+            f"oov_share_{bucket}": share
+            for bucket, share in verdict.get("oov_bucket_mix", {}).items()
+        }
+        metrics |= {
+            f"dialect_share_{dialect}": share
+            for dialect, share in verdict.get("dialect_mix", {})
+            .get("current", {})
+            .items()
+        }
+        _log_run(f"drift-{day}", metrics, [("drift", drift_json)], "drift")
 
 
 if __name__ == "__main__":
