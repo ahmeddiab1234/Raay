@@ -67,6 +67,17 @@ class DefaultPaths(str, Enum):
     # promote_model.py reads it from a fresh CI checkout to stamp the reason
     # onto the promoted model version.
     RETRAIN_TRIGGER_REPORTS = "reports/retrain_trigger"
+    # Phase 6 step 4 (customer-service feedback loop). Three layers, and the
+    # separation is load-bearing: `raw` is appended to by a running service (so
+    # it cannot be a DVC stage dep), `reviewed` is the QA'd subset an operator
+    # `dvc add`s like data/raw/Final_Data.csv, and the merged output is
+    # train-only so the frozen test split that promote_model.py hashes against
+    # dvc.lock never moves.
+    FEEDBACK_RAW = "data/feedback/raw"
+    FEEDBACK_REVIEWED = "data/feedback/reviewed/overrides.csv"
+    FEEDBACK_MERGED = "data/processed/train_feedback.csv"
+    FEEDBACK_METRICS = "reports/feedback_metrics.json"
+    FEEDBACK_SECRETS = "airflow_runtime/secrets/feedback_token"
     ONNX_DIR = "models/onnx"
     ONNX_MODEL = "models/onnx/model.onnx"
     ONNX_DISTILLED = "models/onnx/distilled.onnx"

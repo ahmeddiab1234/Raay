@@ -19,6 +19,19 @@ def workflow():
     return yaml.safe_load(WORKFLOW.read_text())
 
 
+def workflow_text(name: str) -> str:
+    return (WORKFLOW.parent / name).read_text()
+
+
+def workflow_of(name: str):
+    return yaml.safe_load(workflow_text(name))
+
+
+@pytest.fixture(scope="module")
+def dvc():
+    return yaml.safe_load((WORKFLOW.parents[2] / "dvc.yaml").read_text())
+
+
 def _steps(workflow, job):
     return workflow["jobs"][job]["steps"]
 
@@ -199,3 +212,111 @@ def test_install_is_frozen_so_ci_cannot_rewrite_the_lock(workflow):
         commands = _run_commands(workflow, job)
         if "uv sync" in commands:
             assert "uv sync ${{ env.UV_FLAGS }}" in commands
+
+
+# ------------------------------------------------------- feedback (Phase 6)
+
+
+def test_the_feedback_stage_is_not_reproduced_in_ci(workflow):
+    """CI must not repro the feedback stage, and must not `dvc add` it either.
+
+    The reviewed overrides file is a human-in-the-loop artifact: an operator edits
+    it after `--mode review` and then `dvc add`s it themselves, which is the same
+    ritual as `data/raw/Final_Data.csv`. If CI regenerated or re-added it, every PR
+    would rewrite a file a person is meant to have signed off on.
+    """
+    commands = "\n".join(_run_commands(workflow, job) for job in workflow["jobs"])
+    assert "dvc repro" in commands  # the pipeline stage still exists
+    assert "raay.data.feedback" not in commands
+    assert "--mode review" not in commands
+
+
+def test_feedback_is_not_a_ci_dvc_stage(dvc):
+    """`dvc repro` with no args would then run it, on a runner with no raw captures.
+
+    A stage that no CI job wants must still be *named* explicitly in the pipeline
+    job's `dvc repro` call, or it gets swept in.
+    """
+    assert "feedback" in dvc["stages"], (
+        "the stage should still exist for the nightly job"
+    )
+    repro_lines = []
+    for job in workflow_of("ci.yml").get("jobs", {}).values():
+        for step in job.get("steps", []):
+            run = step.get("run", "")
+            if "dvc repro" in run:
+                repro_lines.append(run)
+    assert repro_lines, "expected an explicit dvc repro in CI"
+    for line in repro_lines:
+        # Every repro is target-scoped, so a stage CI does not want can never be
+        # swept in by a bare `dvc repro`.
+        targets = line.split("dvc repro", 1)[1].strip()
+        assert targets, "a bare `dvc repro` would run the feedback stage too"
+        assert "feedback" not in targets
+
+
+def test_the_status_check_stays_scoped_away_from_feedback(workflow):
+    """`dvc status` with no stage list would false-fail on the feedback outputs.
+
+    Same trap as the serving artifacts: CI never pulls the feedback stage's
+    outputs, so an unscoped status check reports them as missing.
+    """
+    commands = _run_commands(workflow, "pipeline")
+    status_lines = [
+        line
+        for line in commands.splitlines()
+        if "dvc status" in line and not line.lstrip().startswith("#")
+    ]
+    assert status_lines
+    for line in status_lines:
+        assert "preprocess" in line and "split" in line
+
+
+def test_the_lock_check_still_covers_the_whole_pipeline(workflow):
+    """`-- dvc.lock` is unscoped, so it also covers the feedback stage's hashes.
+
+    That is deliberate and is the one place CI touches feedback: if a committed
+    `dvc.lock` disagrees with a re-run merge, reproducibility is broken and the
+    diff must surface.
+    """
+    commands = _run_commands(workflow, "pipeline")
+    assert "git diff --exit-code dvc.lock" in commands
+
+
+def test_retrain_also_leaves_the_feedback_stage_alone():
+    """`retrain.yml` re-runs `dvc repro` on new raw data and must stay scoped too."""
+    retrain = workflow_of("retrain.yml")
+    commands = "\n".join(
+        step.get("run", "") for job in retrain["jobs"].values() for step in job["steps"]
+    )
+    assert "--mode review" not in commands
+    assert "raay.data.feedback" not in commands
+
+
+def test_no_workflow_can_widen_a_token_into_a_training_path(workflow):
+    """The capture token must never be echoed or read by a CI/CD job.
+
+    A write endpoint into the training set is a poisoning vector, so the token is
+    a runtime secret of the sidecar only.
+    """
+    for name in ("ci.yml", "cd.yml", "promote.yml", "retrain.yml"):
+        text = workflow_text(name)
+        assert "RAAY_FEEDBACK_TOKEN" not in text
+        assert "feedback_service" not in text
+
+
+def test_retrain_repro_is_target_scoped_too():
+    """Pin the scope on both workflows that repro, not just the assertion that
+    neither mentions feedback -- a future bare `dvc repro` would silently sweep
+    the stage back in, and only the target list catches that."""
+    for name in ("ci.yml", "retrain.yml"):
+        for job in workflow_of(name).get("jobs", {}).values():
+            for step in job.get("steps", []):
+                run = step.get("run", "")
+                if "dvc repro" in run:
+                    targets = run.split("dvc repro", 1)[1].strip()
+                    assert targets, f"{name} has a bare `dvc repro`"
+                    assert "feedback" not in targets, (
+                        f"{name} repros the feedback stage"
+                    )
+                    assert set(targets.split()) == {"preprocess", "split"}

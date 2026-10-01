@@ -7,3 +7,33 @@ split:
   test_size: 0.2
   val_size: 0.1
   random_state: 42
+
+# Phase 6 step 4 (customer-service feedback loop). Read by
+# `python -m raay.data.feedback --mode review` and `--mode merge`.
+feedback:
+  # A customer-service agent's correction is a human opinion formed under time
+  # pressure during a dispute, so nothing reaches the training set on one
+  # assertion. An override must be corroborated by a second distinct agent_id
+  # on the same text, or carry an adjudicated_label (mirrors the 2-annotator +
+  # adjudicator process in docs/labeling_guidelines.md section 4).
+  min_corroborating_agents: 2
+  # Rows the model already got right are `confirmation` and are excluded from
+  # training unconditionally -- their "corrected" label is the model's own
+  # prediction, so two agents agreeing on one is evidence about nothing. They
+  # are still captured, because they are the denominator of
+  # production_error_rate: the one production-traffic measurement the whole of
+  # Phase 6 cannot otherwise make, since every drift panel is a seeded draw
+  # from data/processed/test.csv.
+  #
+  # Routing only, never a gate: an override on a text the model was confident
+  # about is queued for adjudication first. Rejecting it would discard exactly
+  # the confidently-wrong hard cases this loop exists to collect.
+  suspicious_model_score: 0.9
+  # Neutral is the model's weakest class (recall 0.139 against a 5.1% prior), so
+  # overrides skew heavily toward it. 50 per batch moves the training prior by
+  # ~0.2pp on a 25k train set; anything larger silently invalidates the
+  # training-prior reference prediction_drift.py reads from train.csv.
+  max_neutral_per_batch: 50
+  # Matches preprocessing.min_char_length. Reused rather than duplicated so the
+  # emptiness rule cannot drift between the two pipelines.
+  min_char_length: 10

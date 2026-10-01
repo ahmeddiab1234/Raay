@@ -137,7 +137,14 @@ jobs:
         run: uv run ${{ env.UV_FLAGS }} dvc pull data/raw/Final_Data.csv.dvc
 
       - name: Reproduce pipeline
-        run: uv run ${{ env.UV_FLAGS }} dvc repro
+        # Scoped to the pipeline stages, not bare `dvc repro`. The `feedback`
+        # stage (Phase 6 step 4) is deliberately excluded: its dependency is
+        # data/feedback/reviewed/overrides.csv, a human-in-the-loop artifact this
+        # job never pulls, and running it here would rewrite
+        # reports/feedback_metrics.json -- which lands in dvc.lock and would then
+        # trip `git diff --exit-code dvc.lock` under a metrics table that
+        # explains nothing. `dvc repro` with no target would sweep it in.
+        run: uv run ${{ env.UV_FLAGS }} dvc repro preprocess split
 
       - name: Check for untracked pipeline outputs
         run: |

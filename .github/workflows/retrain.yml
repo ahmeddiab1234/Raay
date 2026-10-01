@@ -97,7 +97,10 @@ jobs:
         run: uv run ${{ env.UV_FLAGS }} dvc pull data/raw/Final_Data.csv.dvc
 
       - name: Reproduce pipeline
-        run: uv run ${{ env.UV_FLAGS }} dvc repro
+        # Target-scoped: a bare `dvc repro` would also run the `feedback` stage,
+        # whose dependency (data/feedback/reviewed/overrides.csv) this job never
+        # pulls. Same reason the status check below is scoped.
+        run: uv run ${{ env.UV_FLAGS }} dvc repro preprocess split
 
       - name: Assert the pipeline is clean
         # A dirty tree after repro is a pipeline/infra break, not a data

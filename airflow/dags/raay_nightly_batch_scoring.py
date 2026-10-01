@@ -18,6 +18,10 @@ raay project venv via ``uv run``:
    retrain decision (psi_breach / scheduled / manual / none) and records the
    reason in MLflow -> reports/retrain_trigger/{{ ds }}.json. It does not
    retrain: fine-tuning is scripts/kaggle_train_runs.py on a Kaggle GPU.
+6. ``merge_validated_feedback`` -- Phase 6 step 4: folds QA-approved
+   customer-service overrides into data/processed/train_feedback.csv ->
+   reports/feedback_metrics.json. Short-circuits when there is nothing new to
+   merge, so a quiet night is a visible *skip* rather than a silent no-op.
 
 The DAG itself is thin and stateless on purpose: Airflow owns retries /
 scheduling / logs; the heavy lifting stays in the tested batch_score module.
@@ -29,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import ShortCircuitOperator
 
 REPO = "/home/diab/Documents/Raay"
 
@@ -54,6 +59,34 @@ def trigger_step() -> str:
         + "{{ ds }}"
         + " --token-file airflow_runtime/secrets/github_dispatch_token"
     )
+
+
+def has_pending_feedback() -> bool:
+    """Short-circuit predicate: is there a reviewed override not yet merged?
+
+    ``ShortCircuitOperator`` rather than a Bash no-op because a skip is a first
+    class task state a human can read in the UI, whereas an idempotent exit 0
+    looks identical to a run that actually did work. The predicate itself reads
+    the merged file rather than a counter, so a retry after a crash mid-merge
+    does not re-merge rows that already landed.
+    """
+    from raay.data.feedback import has_new_feedback
+    from raay.enums.constants import DefaultPaths
+
+    return has_new_feedback(
+        DefaultPaths.FEEDBACK_REVIEWED.value, DefaultPaths.FEEDBACK_MERGED.value
+    )
+
+
+def feedback_step() -> str:
+    """Bash snippet: merge validated overrides into the training sidecar.
+
+    ``raay.data.feedback`` rather than another ``batch_score`` mode: this needs
+    no frame scoring, no encoder and no ONNX graph, and it owns a different
+    question (is this label trustworthy?) than the rest of the chain (has the
+    world moved?).
+    """
+    return f"cd {REPO} && uv run python -m raay.data.feedback --mode merge"
 
 
 default_args = {
@@ -101,4 +134,23 @@ with DAG(
         task_id="evaluate_retrain_trigger",
         bash_command=trigger_step(),
     )
+    # Phase 6 step 4. Last in the chain. Its *inputs* do not overlap with tasks
+    # 3-5 -- it reads data/feedback/reviewed/overrides.csv, not either drift
+    # report -- but it rewrites reports/feedback_metrics.json, and an operator
+    # debugging a night's outcome wants all five reports present before this one
+    # starts mutating state. Chaining it after `trigger` also means it cannot run
+    # at all if the drift chain failed, rather than half-applying a batch on top
+    # of an incomplete night.
+    merge_feedback = BashOperator(
+        task_id="merge_validated_feedback",
+        bash_command=feedback_step(),
+    )
+    # A skip, not a no-op: on most nights there is nothing new to merge, and the
+    # merge should not write reports/feedback_metrics.json (which is DVC-tracked
+    # with cache: false) for a no-op, churning dvc.lock on every run.
+    has_feedback = ShortCircuitOperator(
+        task_id="check_pending_feedback",
+        python_callable=has_pending_feedback,
+    )
     materialize >> score >> drift >> predict_drift >> trigger
+    trigger >> has_feedback >> merge_feedback

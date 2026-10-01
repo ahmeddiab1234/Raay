@@ -138,6 +138,17 @@ data/**
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+# Phase 6 step 4: the capture sink and the QA'd subset. Each directory level has
+# to be re-included individually -- git will not descend into an excluded
+# directory, so un-ignoring only data/feedback/ leaves data/feedback/reviewed/
+# excluded and !data/**/*.dvc can never re-include a pointer inside it. This is
+# the same trap as the models/baseline/ rules further down, and `dvc add` fails
+# with "bad DVC file name ... is git-ignored" if it is got wrong.
+!data/feedback/
+!data/feedback/raw/
+!data/feedback/reviewed/
+!data/feedback/raw/.gitkeep
+!data/feedback/reviewed/.gitkeep
 
 # And keep DVC pointer files
 !data/**/*.dvc

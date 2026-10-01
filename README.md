@@ -61,10 +61,11 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
 | **Canary Rollout**         | Standalone nginx-fronted project: shadow-mirror then 5/95→100 %, gated on Prometheus |
 | **Scheduled Retraining**   | Weekly `retrain.yml` re-runs DVC on newly versioned data, gates proportions, opens a `dev` PR |
+| **Human Feedback Loop**     | Authenticated CS override capture, two-agent QA ladder, train-only merge of hard negatives |
 | **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases                  |
 | **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
 | **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
-| **Testing**                | pytest suite (432 unit tests, hermetic — no GPU, no network, no servers)                                 |
+| **Testing**                | pytest suite (703 unit tests, hermetic — no GPU, no network, no servers)                                 |
 | **Configuration**          | Hydra for training/distillation; `params.yaml` for the DVC data stages                                        |
 | **Typed Schemas**          | Pydantic I/O models for the serving contract                                                                   |
 | **Structured Logging**     | Loguru for structured, leveled logging                                                                         |
@@ -102,21 +103,22 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 ```
 raay/
 ├── src/raay/                       # Main Python package
-│   ├── data/                       #   Preprocessing, splitting, dialect detection
+│   ├── data/                       #   Preprocessing, splitting, dialect, feedback QA
 │   ├── training/                   #   Fine-tuning, distillation, evaluation
 │   ├── inference/                  #   ONNX export/quantize, queue consumer, batch scoring
-│   ├── serving/                    #   BentoML service + latency benchmark
+│   ├── serving/                    #   BentoML service, benchmark, feedback capture
 │   ├── config/                     #   Env loading, data config
 │   └── enums/                      #   Shared constants (paths, experiments, models)
 │
-├── airflow/dags/                   # Nightly batch-scoring DAG
+├── airflow/dags/                   # Nightly batch-scoring + feedback-merge DAG
 ├── configs/                        # Hydra configs (train.yaml, distill.yaml)
 ├── deploy/                         # nginx_canary.conf (generated front) · prometheus.yml
 │
 ├── data/                           # DVC-tracked (git-ignored)
 │   ├── raw/                        #   Source CSVs (.dvc pointers committed)
 │   ├── interim/                    #   normalized.csv
-│   ├── processed/                  #   train/val/test splits
+│   ├── processed/                  #   train/val/test splits + train_feedback.csv (train-only)
+│   ├── feedback/                   #   raw/ captures · reviewed/ (DVC pointer, human-owned)
 │   └── scoring/                    #   input/ · output/ · reference/ panels
 │
 ├── models/                         # Trained checkpoints + ONNX graphs
@@ -588,6 +590,105 @@ run summary. ~19 structural tests in `tests/test_retrain_workflow.py`; the
 `--ignore` change to `ci_metrics_gate.py` leaves the default path byte-identical,
 so CI's own gate is untouched (35 tests).
 
+### 5.9 Customer-Service Feedback Loop (Step 6)
+
+The last mile: production disagrees with the model, and the disagreement is a
+**labelled example nobody had**. A CS agent corrects a sentiment label in their
+tool; those corrections are the only real-traffic supervision this project has.
+
+```
+POST /feedback  ──►  data/feedback/raw/{date}.csv        (append-only, never edited)
+                        │
+                        │  --mode review        operator + adjudication happen here
+                        ▼
+                  data/feedback/reviewed/overrides.csv   (git-tracked, DVC-hashed, human-owned)
+                        │
+                        │  --mode merge         DVC stage, the only path into training data
+                        ▼
+                  data/processed/train_feedback.csv      (train-only sidecar)
+                        │
+                        ▼
+                  train.py concatenates onto train.csv   (val and test untouched)
+```
+
+**Capture** — `src/raay/serving/feedback_service.py`, a standalone Starlette
+sidecar. `POST /feedback` with a bearer token (`RAAY_FEEDBACK_TOKEN` or
+`RAAY_FEEDBACK_TOKEN_FILE`), plus `/health` and `/stats`. Append-only CSV, one
+file per UTC day, idempotent on a content hash of
+`(text, model_label, corrected_label, agent_id)` — so a retrying client or a CS
+tool that double-clicks produces one row, not two. The service **refuses to
+start** without a token unless `RAAY_FEEDBACK_ALLOW_ANON=1`; an unauthenticated
+write endpoint into the training set is a poisoning vector.
+
+**QA ladder** — `--mode review`. An override is a *proposal*, not ground truth:
+a support agent's judgement is formed under time pressure during a dispute, and
+disputes are frequently about shipping rather than sentiment.
+
+| Status | Meaning | Trains? |
+| --- | --- | --- |
+| `corroborated` | 2 **distinct agents** assert the same label for the same review | yes |
+| `adjudicated` | a senior adjudicator ruled (the ruling wins over the agents) | yes |
+| `single_agent` | only one assertion so far | no |
+| `disputed` | ≥2 agents, no label reaches the bar | no |
+| `confirmation` | `model_label == corrected_label` | **never** |
+| `leak` | fuzzy-matches `data/processed/test.csv` | no |
+| `duplicate` | already merged by an earlier run | no |
+| `near_empty` | below `min_char_length` | no |
+
+Three deliberate choices worth knowing:
+
+- **Corroboration counts agents, not rows.** An agent who double-posts cannot
+  corroborate themselves; an agent asserting two labels for one review is dropped
+  as self-contradictory rather than counted as a vote.
+- **One review yields one training row.** The second assertion is *evidence for
+  the label* (`corroborated_by`), not a second copy — two identical
+  `(text, label)` pairs would weight a single hard negative 2× for no
+  informational reason.
+- **Confirmations are never training data.** A confirmation's "corrected" label
+  *is* the model's own prediction. It is kept instead as the **denominator** of
+  `production_error_rate` in `reports/feedback_metrics.json` — the only
+  production-measured error rate in the project, and the only Phase 6 signal not
+  drawn from `test.csv`. It is uninterpretable if the CS tool posts only
+  disputes, and the report says so in its own `note`.
+
+**Routing, not gating.** A `model_score ≥ 0.9` sends a row to
+`route=adjudicate_first`. A model that was confident *and wrong* is the hardest
+case worth collecting, so confidence must never be able to discard a row. Neutral
+overrides are capped at 50/batch because CS disputes skew Neutral and Neutral is
+already the weakest class (recall 0.139).
+
+**Train-only by design.** Merging into `data/interim/normalized.csv` would
+re-run `split`, change `test.csv`, and make `promote_model.py:check_frozen_split`
+exit 2 with no report — collapsing the 14-gate promotion story. So the merged
+rows get their own file that `load_data` concatenates onto **train only**: `val`
+drives `load_best_model_at_end` so overrides must not touch it, and the frozen
+test split never moves.
+
+**The two modes read different things, deliberately.** `--mode merge` is a DVC
+stage whose only dependency is `reviewed/overrides.csv`; it must not read
+`raw/`, because doing so would (a) make it unreproducible from its own declared
+deps and (b) **rewrite the reviewed file, destroying every `adjudicated_label` a
+person typed in**. `review` writes it, a human edits it, DVC hashes it, `merge`
+consumes it. `merge` is idempotent — it appends to the existing sidecar and
+drops texts already present, so a retry after a crash cannot double-count.
+
+Nightly, the sixth Airflow task (`check_pending_feedback` →
+`merge_validated_feedback`) chains off the end of the drift chain and
+short-circuits when there is nothing new, so a no-op night does not churn
+`dvc.lock`.
+
+```bash
+uv run python -m raay.data.feedback --mode review    # raw -> reviewed/overrides.csv (operator, then dvc add)
+uv run dvc repro feedback                            # reviewed -> train_feedback.csv (the DVC stage)
+uv run python -m raay.data.feedback --mode merge     # same command, without DVC
+```
+
+`ci.yml` and `retrain.yml` scope `dvc repro` to `preprocess split`, so a bare
+`dvc repro` cannot sweep the feedback stage into a PR whose metrics gate would
+then explain nothing. `dvc.lock` still covers its hashes, so a non-reproducible
+merge surfaces as a lock diff. 67 tests in `tests/test_feedback.py`, 32 in
+`tests/test_feedback_service.py`.
+
 ---
 
 ## Phase 6: CI/CD, Deployment &amp; Automation
@@ -666,6 +767,8 @@ Stated plainly, because the numbers above are only useful with their caveats:
 - **INT8 "gaining" accuracy is noise.** 85.03 % vs 84.92 % is within quantization noise on 7 209 samples; the honest claim is "no meaningful quality loss at 4× compression".
 - **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one.
 - **No local GPU.** Training and distillation run on Kaggle; local work is CPU-only inference.
+- **The feedback loop is unexercised by real traffic.** No CS tool is deployed and no agent roster exists, so every number in `reports/feedback_metrics.json` is a rehearsal. Two-agent corroboration needs two real identities: until then `--mode review` legitimately returns 100 % `single_agent` and nothing is trainable. `train_feedback.csv` ships header-only.
+- **`docs/labeling_guidelines.md` was wrong about the label encoding until v1.1.** It read Positive=2/Neutral=1/Negative=0; every graph uses the inverse. `promote_model.py`'s `label order vs Production` gate exists because of exactly this failure mode. The table is fixed and marked, and the order is now read from `constants.py` rather than retyped.
 
 ---
 
@@ -683,6 +786,9 @@ Stated plainly, because the numbers above are only useful with their caveats:
 | `RAAY_ALIAS`              | Registry alias resolved at worker start                  | `Production`                                                         |
 | `DATA_ROOT`               | Kaggle snapshot dir holding the processed splits         | —                                                                     |
 | `KAGGLE_TEACHER_DIR`      | Kaggle teacher checkpoint dir (distillation)             | —                                                                     |
+| `RAAY_FEEDBACK_TOKEN`     | Bearer token for `POST /feedback` (write access to the training corpus) | unset → the service **refuses to start**                |
+| `RAAY_FEEDBACK_TOKEN_FILE` | File holding that token (preferred; not visible in `ps`) | —                                                                     |
+| `RAAY_FEEDBACK_ALLOW_ANON` | Permit an unauthenticated feedback service (local dev only) | `0`                                                            |
 
 ---
 

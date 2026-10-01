@@ -51,6 +51,18 @@ train_file: data/processed/train.csv
 val_file: data/processed/val.csv
 test_file: data/processed/test.csv
 
+# Phase 6 step 4: QA-validated customer-service overrides, concatenated onto
+# TRAIN ONLY. Deliberately no val counterpart -- val drives
+# load_best_model_at_end, so letting unvetted overrides influence model selection
+# would corrupt every metric that follows. test_file must never see this data
+# either: data/processed/test.csv is the frozen split that
+# scripts/promote_model.py hashes against dvc.lock, and a feedback row that
+# overlaps it is rejected as `leak` in raay.data.feedback precisely so the eval
+# number cannot be inflated.
+# Optional: absent or empty means "train on the base splits alone", which is the
+# normal state until a CS tool has captured anything.
+extra_train_file: data/processed/train_feedback.csv
+
 # MLflow
 experiment_name: raay_training
 
