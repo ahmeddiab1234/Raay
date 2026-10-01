@@ -170,6 +170,8 @@ Preprocessing on the primary set (`reports/preprocess_metrics.json`): 40 046 raw
 
 ## Installation & Usage
 
+**Phase 1: Project Setup** ([PR #1](https://github.com/ahmeddiab1234/Raay/pull/1))
+
 ### Prerequisites
 
 - **Python 3.12+**
@@ -254,6 +256,8 @@ uv run pytest                # Tests (704)
 
 ## Data Pipeline
 
+**Phase 2: Data Collection & Preprocessing** ([PR #2](https://github.com/ahmeddiab1234/Raay/pull/2))
+
 A DVC pipeline (`dvc.yaml`) turns the raw dataset into reproducible, dialect-tagged splits. Stages read `params.yaml` and auto-log to the `raay_preprocessing` MLflow experiment.
 
 ```bash
@@ -267,7 +271,7 @@ uv run dvc repro             # preprocess → split
 
 ---
 
-## Phase 3: Modeling Baseline
+## Phase 3: Modeling Baseline ([PR #3](https://github.com/ahmeddiab1234/Raay/pull/3))
 
 AraBERT v2 (`aubmindlab/bert-base-arabertv02`) fine-tuned through a **6-run Kaggle GPU sweep** (varying `learning_rate` / `batch_size`); the best run was registered as `ArabicSentiment → Production`.
 
@@ -315,7 +319,7 @@ uv run python -m raay.training.evaluate \
 
 ---
 
-## Phase 4: Compression & Optimization
+## Phase 4: Compression & Optimization ([PR #4](https://github.com/ahmeddiab1234/Raay/pull/4))
 
 Cut inference cost without losing quality: **distillation → ONNX export → INT8 quantization**, with every variant benchmarked on accuracy *and* latency and tracked in MLflow.
 
@@ -383,7 +387,7 @@ Each variant is logged as its own `raay_training` run (`stage=baseline|distilled
 
 ---
 
-## Phase 5: Serving & Operations
+## Phase 5: Serving & Operations ([PR #5](https://github.com/ahmeddiab1234/Raay/pull/5))
 
 ### 5.1 The API
 
@@ -458,7 +462,7 @@ uv run python -m raay.inference.batch_consumer --mode benchmark \
 - Publishes `{"id"?, "text", "label", "score"}` to `reviews-results`
 - 20 hermetic tests (`tests/test_batch_consumer.py`)
 
-### 5.5 Nightly Batch Re-Scoring & Drift
+### 5.5 Nightly Batch Re-Scoring & Drift (Phase 7: [PR #7](https://github.com/ahmeddiab1234/Raay/pull/7))
 
 ```bash
 uv run python -m raay.inference.batch_score --mode init-reference --samples 1200
@@ -785,7 +789,7 @@ merge surfaces as a lock diff. 67 tests in `tests/test_feedback.py`, 32 in
 
 ---
 
-## Phase 6: CI/CD, Deployment &amp; Automation
+## Phase 6: CI/CD, Deployment &amp; Automation ([PR #6](https://github.com/ahmeddiab1234/Raay/pull/6))
 
 The pipeline is four workflow files with one shared quality gate and one mover of truth.
 
