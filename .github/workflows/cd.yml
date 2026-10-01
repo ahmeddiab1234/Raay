@@ -293,6 +293,10 @@ jobs:
     name: Deploy to staging
     runs-on: ubuntu-latest
     needs: [docker-build]
+    # Set the repository Actions variable to 'true' after the staging host is
+    # provisioned; until then, keep image build and validation green without
+    # attempting an impossible deployment.
+    if: vars.STAGING_DEPLOY_ENABLED == 'true'
     # An environment is what makes the approval gate, the per-environment
     # secrets and the deployment history all work. Leave the reviewers list
     # empty to deploy automatically, or add required reviewers to make every

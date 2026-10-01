@@ -28,6 +28,10 @@ def test_staging_deploy_runs_after_the_image_is_published(workflow):
     assert job["needs"] == ["docker-build"]
 
 
+def test_staging_deploy_is_opt_in(workflow):
+    assert _deploy(workflow)["if"] == "vars.STAGING_DEPLOY_ENABLED == 'true'"
+
+
 def test_staging_deploy_uses_an_environment(workflow):
     # An environment is what supplies the gate, the per-env secrets and the
     # deployment history; with reviewers configured every release waits.
