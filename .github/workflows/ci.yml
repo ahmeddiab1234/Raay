@@ -193,28 +193,19 @@ jobs:
             --threshold 0.005 \
             --markdown reports/metrics_diff.md
 
-      - name: Install CML
-        if: >-
-          always() && github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == github.repository
-        uses: iterative/setup-cml@v3
-        with:
-          # Vega needs libcairo2-dev/libpango1.0-dev system packages that are not
-          # on the runner by default, and the metrics report has no charts.
-          vega: false
-
       - name: Post the metrics report on the PR
         if: >-
           always() && github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository
         env:
-          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ ! -f reports/metrics_diff.md ]; then
             echo "::error::The metrics gate exited before writing a report; see the job log." \
               > reports/metrics_diff.md
           fi
-          cml comment create reports/metrics_diff.md
+          gh pr comment "$PR_NUMBER" --body-file reports/metrics_diff.md
 
       - name: Fail on metrics drift
         if: steps.gate.outcome == 'failure'

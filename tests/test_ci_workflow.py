@@ -141,6 +141,17 @@ def test_pr_comment_is_skipped_on_forks(workflow):
     assert "head.repo.full_name == github.repository" in comment["if"]
 
 
+def test_pr_comment_uses_authenticated_github_cli(workflow):
+    steps = _steps(workflow, "pipeline")
+    assert not any("setup-cml" in step.get("uses", "") for step in steps)
+    comment = next(
+        s for s in steps if s.get("name") == "Post the metrics report on the PR"
+    )
+    assert comment["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert 'gh pr comment "$PR_NUMBER"' in comment["run"]
+    assert "--body-file reports/metrics_diff.md" in comment["run"]
+
+
 def test_dvc_pipeline_job_is_gated_off_forks(workflow):
     """The whole secret-dependent job is skipped, not just the comment.
 
