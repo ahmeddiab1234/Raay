@@ -127,8 +127,13 @@ def test_registry_token_never_reaches_argv_or_a_log(workflow):
 
 def test_registry_token_is_removed_even_when_the_deploy_fails(workflow):
     cleanup = _step(workflow, "Remove the registry token", "deploy-staging")
-    # Without always(), the failure path is the one that leaks the credential.
-    assert cleanup["if"] == "always()"
+    # Keep cleanup on deploy failures, but don't SSH before the token was sent.
+    handover = _step(workflow, "Hand over the registry token", "deploy-staging")
+    assert handover["id"] == "registry_token_handover"
+    assert (
+        cleanup["if"]
+        == "always() && steps.registry_token_handover.outcome == 'success'"
+    )
     assert "registry-token" in cleanup["run"]
 
 
