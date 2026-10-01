@@ -10,8 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import canary_model
 import mlflow
-from canary_model import _materialize_canary_model_dir
 from canary_registry import _MODEL, _STAGE_CANARY
 from loguru import logger
 
@@ -57,7 +57,7 @@ def declare(
         run_id = run.info.run_id
         logger.info(f"Logged canary run {run_id}")
 
-    model_uri = _materialize_canary_model_dir(
+    model_uri = canary_model._materialize_canary_model_dir(
         run_id=run_id,
         onnx_path=DefaultPaths.ONNX_DISTILLED.value,
         out_dir=Path("reports") / "models" / "canary_distilled_fp32_mlflow",

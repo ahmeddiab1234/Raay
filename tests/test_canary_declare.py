@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import canary_model
 import pytest
 from canary_helpers import (
     FakeMlflowClient,
@@ -37,7 +38,7 @@ def test_declare_registers_canary_alias(canary, monkeypatch, tmp_path):
 
     monkeypatch.setattr(canary.mlflow, "register_model", fake_register)
     monkeypatch.setattr(
-        canary,
+        canary_model,
         "_materialize_canary_model_dir",
         lambda run_id, onnx_path, out_dir: str(tmp_path),
     )
@@ -59,7 +60,7 @@ def test_declare_is_idempotent(canary, monkeypatch, tmp_path):
 
     monkeypatch.setattr(canary.mlflow, "register_model", fake_register)
     monkeypatch.setattr(
-        canary,
+        canary_model,
         "_materialize_canary_model_dir",
         lambda run_id, onnx_path, out_dir: str(tmp_path),
     )
