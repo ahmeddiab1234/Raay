@@ -819,61 +819,7 @@ uv run python scripts/promote_model.py --candidate-version 7 --skip-registry
 
 `promote.yml` splits it into a measuring `gate` job and a human-approved `promote` job that re-runs the gate at flip time. Exit codes: `0` passed, `1` a gate failed, `2` the gate could not run at all (and produces no report, deliberately).
 
----
 
-## Testing
-
-**704 hermetic unit tests** (703 passing, 1 skipped) — no GPU, no network, no running servers:
-
-| Suite                             | Tests | Covers                                                                    |
-| --------------------------------- | ----: | ------------------------------------------------------------------------- |
-| `tests/test_promote_model.py`     |    74 | Promotion gate (14 gates, latency A/B, dry-run safety)                     |
-| `tests/test_feedback.py`          |    67 | Feedback QA ladder, corroboration, leakage guard, train-only merge         |
-| `tests/test_drift_features.py`    |    51 | Engineered drift columns, frozen PCA basis, OOV comparability               |
-| `tests/test_cd_workflow.py`       |    48 | CD workflow contract (build → inspect → smoke test → push)                  |
-| `tests/test_canary_nginx.py`      |    46 | Conf renderer per stage, compose, rollout semantics, gate math              |
-| `tests/test_batch_score.py`       |    37 | Input sampling, scoring, PSI drift verdicts, prediction drift               |
-| `tests/test_retrain_trigger.py`   |    37 | Trigger precedence, seasonal calendar, `repository_dispatch` POST            |
-| `tests/test_serving.py`           |    36 | BentoML service, health middleware, 422 validation, telemetry events        |
-| `tests/test_deploy_staging.py`    |    36 | Staging deploy tool (flip/schema/unhealthy rollback paths)                  |
-| `tests/test_ci_metrics_gate.py`   |    35 | Split-metrics diff gate (incl. `--ignore` refresh mode)                     |
-| `tests/test_feedback_service.py`  |    32 | Starlette feedback sidecar (auth, idempotency, 422s)                        |
-| `tests/test_prediction_drift.py`  |    31 | Class-mix gates, triage matrix, rolling z-score                             |
-| `tests/test_promote_workflow.py`  |    29 | Promotion workflow contract (gate → human → re-gate)                        |
-| `tests/test_ci_workflow.py`       |    27 | CI workflow contract (fork guard, repro scoping, token pinning)              |
-| `tests/test_retrain_workflow.py`  |    24 | Retrain workflow contract + the `notify` job                                |
-| `tests/test_canary_agent.py`      |    22 | Shadow pairing (request-id + content), gaps, Prometheus text                |
-| `tests/test_batch_consumer.py`    |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer                |
-| `tests/test_nightly_dag.py`       |    11 | Nightly DAG task chain and ordering                                         |
-| `tests/test_preprocess.py`        |     9 | Normalization, dedup, near-empty flagging                                   |
-| `tests/test_export_onnx.py`       |     9 | Export parity helpers                                                       |
-| `tests/test_dialect.py`           |     7 | Dialect heuristics + confidence                                             |
-| `tests/test_distill.py`           |     7 | Distillation loss / config wiring                                           |
-| `tests/test_split.py`             |     6 | Split sizes + label/dialect proportions                                     |
-| `tests/test_quantize_onnx.py`     |     3 | Quantization + parity report                                                |
-
-```bash
-uv run pytest
-```
-
----
-
-## Limitations & Honest Findings
-
-Stated plainly, because the numbers above are only useful with their caveats:
-
-- **Micro-batching does not beat serial scoring on this box.** At batch 32 the INT8 graph costs ~58–84 ms *per item* vs ~12 ms single — a `pure_cpu` speedup of **0.25×** (0.50× once a 20 ms per-call overhead is modeled). Batching still wins on *call amortization* (128 reviews → 4 `session.run` calls) and on batch-throughput-bound backends (GPU / TensorRT) or high per-call HTTP overhead. On a 2-core CPU, treat `pure_cpu < 1` as expected, not a bug.
-- **The canary latency gate compares like for like on shared cores.** Both workers run on the same box, so their p95s are a same-hardware A/B (fair) *and* both contend for the same cores (the candidate's sawtooth is partly CPU contention). The stage gates therefore require the *ratio* ≤ 1.10, never an absolute budget. The behavioral gate is the nightly drift chain (input drift → prediction drift → trigger).
-- **Every cron in this repo is inert today.** `main` contains no `.github/` directory at all — it is on a divergent lineage from `dev`, not a fast-forward of it. GitHub only honours `schedule:` and `repository_dispatch` for workflow files on the **default branch**, so the weekly retrain, the weekly promotion re-gate, and all of CD (`push` → `main`) have never executed. `push`/`pull_request` are unaffected, which is why CI looks healthy and hides it. The `repository_dispatch` POST is implemented and returns 204, but that only means GitHub accepted the event — it does not mean a workflow ran, and here none does. Getting the workflow files onto the default branch is the highest-impact fix outstanding.
-- **Both drift panels are seeded draws from `data/processed/test.csv`.** A PASS means "matches the training distribution", and the ~0.05 null floor is therefore optimistic. What is validated is the **mechanism**, not production-traffic behaviour. Two of the four triage cells (`world_changed`, `model_degraded`) are not constructible from one pool at all and are covered only by the parametrized matrix test.
-- **`oov_rate` has no detection power on this corpus.** Every reference review — and the injected new-slang panel — has OOV rate exactly 0.0, because AraBERT v2's 64k WordPiece vocab covers this corpus including franco-Arabizi, so nothing reaches `[UNK]`. It reports decision `SKIPPED` with the reason rather than passing silently; `oov_bucket` is the gated form.
-- **The seasonal trigger cannot be validated here.** No row in the corpus carries a timestamp, so whether firing before Ramadan helped is unknowable. Ramadan/Eid ship `confirmed: false` precisely so a guessed date cannot cause a retrain.
-- **INT8 "gaining" accuracy is noise.** 85.03 % vs 84.92 % is within quantization noise on 7 209 samples; the honest claim is "no meaningful quality loss at 4× compression".
-- **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one. This is also why the prediction-drift gate's ~0.02 baseline against the true prior is expected rather than drift, so its thresholds must not be tightened below it.
-- **No local GPU.** Training and distillation run on Kaggle; local work is CPU-only inference.
-- **The feedback loop is unexercised by real traffic.** No CS tool is deployed and no agent roster exists, so every number in `reports/feedback_metrics.json` is a rehearsal. Two-agent corroboration needs two real identities: until then `--mode review` legitimately returns 100 % `single_agent` and nothing is trainable. `train_feedback.csv` ships header-only, so no claim is made about its effect on F1. The leakage guard is tested against a synthetic `test.csv`, and rapidfuzz at 0.9 will not catch a semantically identical but lexically rewritten review.
-- **`production_error_rate` is uninterpretable if the CS tool posts only disputes.** Confirmations are its denominator, so a dispute-only tool would report a meaningless number — the report says so in its own `note`. An unobserved class gets `rate: null`, never `0.0`.
-- **`docs/labeling_guidelines.md` was wrong about the label encoding until v1.1.** It read Positive=2/Neutral=1/Negative=0; every graph uses the inverse. `promote_model.py`'s `label order vs Production` gate exists because of exactly this failure mode. The table is fixed and marked, and the order is now read from `constants.py` rather than retyped. Its §5 balance target (45/35/20) was also wrong for this dataset and was corrected to the measured 57.6/37.3/5.1.
 
 ---
 
