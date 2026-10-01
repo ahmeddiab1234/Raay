@@ -345,7 +345,7 @@ jobs:
             | grep -qE '[[:space:]](ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+)[[:space:]]'; then
             echo "::error::deploy/staging_known_hosts holds no host key, so the deploy would"
             echo "either fail host-key verification or (if it were disabled) trust anything."
-            echo "Populate it with: ssh-keyscan -p ${STAGING_SSH_PORT} ${STAGING_SSH_HOST} | ssh-keygen -lf -"
+            echo "Populate it with: ssh-keyscan -p ${STAGING_SSH_PORT:-22} ${STAGING_SSH_HOST} | ssh-keygen -lf -"
             exit 1
           fi
 
@@ -366,7 +366,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
-          ssh -p "$STAGING_SSH_PORT" "$target" 'set -e
+          ssh -p "${STAGING_SSH_PORT:-22}" "$target" 'set -e
             command -v docker >/dev/null || { echo "docker is not installed on the staging host"; exit 1; }
             docker compose version >/dev/null
             python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"
@@ -383,7 +383,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
-          scp -P "$STAGING_SSH_PORT" \
+          scp -P "${STAGING_SSH_PORT:-22}" \
             docker-compose.staging.yml scripts/deploy_staging.py \
             "$target:/opt/raay-staging/"
 
@@ -398,7 +398,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
-          printf '%s' "$REGISTRY_TOKEN" | ssh -p "$STAGING_SSH_PORT" "$target" \
+          printf '%s' "$REGISTRY_TOKEN" | ssh -p "${STAGING_SSH_PORT:-22}" "$target" \
             'umask 077; cat > /var/lib/raay-staging/registry-token'
 
       - name: Deploy
@@ -412,7 +412,7 @@ jobs:
           set -uo pipefail
           target="${STAGING_SSH_USER}@${STAGING_SSH_HOST}"
           out=$(mktemp); err=$(mktemp)
-          ssh -p "$STAGING_SSH_PORT" "$target" \
+          ssh -p "${STAGING_SSH_PORT:-22}" "$target" \
             "python3 /opt/raay-staging/deploy_staging.py \
                --target-sha '${{ github.sha }}' \
                --repository '${STAGING_REPOSITORY}' \
@@ -457,5 +457,5 @@ jobs:
         # the failure path where this is the only step that still executes.
         if: always() && steps.registry_token_handover.outcome == 'success'
         run: |
-          ssh -p "$STAGING_SSH_PORT" "${STAGING_SSH_USER}@${STAGING_SSH_HOST}" \
+          ssh -p "${STAGING_SSH_PORT:-22}" "${STAGING_SSH_USER}@${STAGING_SSH_HOST}" \
             'shred -u /var/lib/raay-staging/registry-token 2>/dev/null || rm -f /var/lib/raay-staging/registry-token'

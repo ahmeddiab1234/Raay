@@ -143,6 +143,7 @@ def test_staging_host_key_is_verified_not_disabled(workflow):
     # exercise MITM-able.
     assert "StrictHostKeyChecking=no" not in run
     assert "UserKnownHostsFile=/dev/null" not in run
+    assert run.count("${STAGING_SSH_PORT:-22}") == 6
     trust = _step(workflow, "Trust the staging host key", "deploy-staging")["run"]
     assert "deploy/staging_known_hosts" in trust
     assert "~/.ssh/known_hosts" in trust
