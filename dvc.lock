@@ -1,0 +1,149 @@
+schema: '2.0'
+stages:
+  preprocess:
+    cmd: python -m raay.data.preprocess
+    deps:
+    - path: data/raw/Final_Data.csv
+      hash: md5
+      md5: 77573994194612e9e216e3466b2eeb42
+      size: 4443191
+    - path: src/raay/data/normalize_pipeline.py
+      hash: md5
+      md5: 60c540b11b8533a4d355a782ae17ebb1
+      size: 4429
+    - path: src/raay/data/preprocess.py
+      hash: md5
+      md5: bd89cb742a7fac4b186e38d6432a00dc
+      size: 3818
+    - path: src/raay/data/text_clean.py
+      hash: md5
+      md5: b41681e5c411c3c8d258a9dd6a6858c0
+      size: 3207
+    params:
+      params.yaml:
+        preprocessing:
+          min_char_length: 10
+          elongation_max_repeat: 2
+          dedup_similarity_threshold: 0.9
+    outs:
+    - path: data/interim/normalized.csv
+      hash: md5
+      md5: 250981254fd2c269dece5b288a0ade05
+      size: 4361364
+    - path: reports/preprocess_metrics.json
+      hash: md5
+      md5: e201c8430cf2a3384e330cc17f16fb2d
+      size: 318
+  split:
+    cmd: python -m raay.data.split
+    deps:
+    - path: data/interim/normalized.csv
+      hash: md5
+      md5: 250981254fd2c269dece5b288a0ade05
+      size: 4361364
+    - path: src/raay/data/dialect.py
+      hash: md5
+      md5: bb2478a2714db413e008bd4fd52462de
+      size: 5957
+    - path: src/raay/enums/constants.py
+      hash: md5
+      md5: 5f5a62afc04d3286e8bf47da2bb03dfe
+      size: 5354
+    params:
+      params.yaml:
+        split:
+          test_size: 0.2
+          val_size: 0.1
+          random_state: 42
+    outs:
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 5d18bebe1ecdbbcccab6dca9e311630f
+      size: 971806
+    - path: data/processed/train.csv
+      hash: md5
+      md5: c7275698ec117b0961df59b8a42d9cbb
+      size: 3352436
+    - path: data/processed/val.csv
+      hash: md5
+      md5: 5fe53c87e7b05fbf3862053c4e94845f
+      size: 478580
+    - path: reports/split_metrics.json
+      hash: md5
+      md5: 5058687e3c6cbb7dbc39ef1d280b2187
+      size: 1324
+  feedback:
+    cmd: python -m raay.data.feedback --mode merge
+    deps:
+    - path: data/feedback/reviewed/overrides.csv
+      hash: md5
+      md5: 036b7c027e6689dde19001fd448cb9dd
+      size: 233
+    - path: data/processed/test.csv
+      hash: md5
+      md5: 5d18bebe1ecdbbcccab6dca9e311630f
+      size: 971806
+    - path: src/raay/data/dialect.py
+      hash: md5
+      md5: bb2478a2714db413e008bd4fd52462de
+      size: 5957
+    - path: src/raay/data/feedback.py
+      hash: md5
+      md5: c8ade877ab17130b276e6f259c2a4a2a
+      size: 6034
+    - path: src/raay/data/feedback_cli.py
+      hash: md5
+      md5: b959ea5a4fbd9f1cbcc7937456d99b49
+      size: 6632
+    - path: src/raay/data/feedback_merge.py
+      hash: md5
+      md5: 893623b190ae7fbc9b6b166130d493db
+      size: 7613
+    - path: src/raay/data/feedback_metrics.py
+      hash: md5
+      md5: 071aa427ef36b16eea652651af4571a5
+      size: 7337
+    - path: src/raay/data/feedback_qa.py
+      hash: md5
+      md5: b19d00ec70024f6b6099aee254b483b1
+      size: 7394
+    - path: src/raay/data/feedback_review.py
+      hash: md5
+      md5: 18a0b04b30079655754adc1d96c7d6d0
+      size: 7522
+    - path: src/raay/data/feedback_schema.py
+      hash: md5
+      md5: 50ea1c428bf4011b5e3e7da5999552ee
+      size: 4416
+    - path: src/raay/data/feedback_text.py
+      hash: md5
+      md5: f81c56dd566213119d36f5c406642691
+      size: 2404
+    - path: src/raay/data/preprocess.py
+      hash: md5
+      md5: bd89cb742a7fac4b186e38d6432a00dc
+      size: 3818
+    - path: src/raay/enums/constants.py
+      hash: md5
+      md5: 5f5a62afc04d3286e8bf47da2bb03dfe
+      size: 5354
+    params:
+      params.yaml:
+        feedback:
+          min_corroborating_agents: 2
+          suspicious_model_score: 0.9
+          max_neutral_per_batch: 50
+          min_char_length: 10
+        preprocessing:
+          min_char_length: 10
+          elongation_max_repeat: 2
+          dedup_similarity_threshold: 0.9
+    outs:
+    - path: data/processed/train_feedback.csv
+      hash: md5
+      md5: 9a35a39edfca0290f3fcde533c63bf81
+      size: 161
+    - path: reports/feedback_metrics.json
+      hash: md5
+      md5: 3bc686fa1f3417803e4c86fdb0745d57
+      size: 1591

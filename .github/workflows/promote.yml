@@ -1,0 +1,272 @@
+name: promote
+
+# Two jobs, deliberately separated by a human.
+#
+#   gate    measures the candidate and writes a decision. It is allowed to
+#           publish the *Candidate* alias so the version becomes inspectable,
+#           but it can never move Production.
+#   promote re-measures and flips Production -- but only after a human approved
+#           the `production` environment.
+#
+# The promote job re-runs the gate rather than trusting the artifact from the
+# first job. Re-measuring costs another few minutes on a rare event, and buys
+# the guarantee that nothing changed on disk, in the registry, or in the split
+# between the moment a human read the numbers and the moment the alias moved.
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_version:
+        description: "Registered model version to gate (ArabicSentiment)"
+        required: true
+        type: string
+      candidate_onnx:
+        description: "Graph to evaluate, if not resolving it from the registry"
+        required: false
+        default: ""
+        type: string
+      floor_tolerance:
+        description: "Allowed macro-F1 shortfall against eval_baseline.json"
+        required: false
+        default: "0.01"
+        type: string
+  schedule:
+    # Weekly drift check of whatever is registered as Production. A no-op
+    # promotion would be harmless but would burn a runner and a model download,
+    # so this is a reminder to re-gate after a data or library change.
+    - cron: "17 6 * * 1"
+
+# Never let two promotions interleave: a half-finished alias move is worse than
+# a stale one, so a running promotion is never cancelled.
+concurrency:
+  group: promote-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  MODEL_NAME: ArabicSentiment
+  # Reproduced from the serving config so the gate scores exactly what the
+  # service would score.
+  MAX_LENGTH: "128"
+  BASE_MODEL: aubmindlab/bert-base-arabertv02
+
+jobs:
+  gate:
+    name: evaluate candidate
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+      # Only scalars cross the job boundary. A resolved path belongs to the
+      # runner that resolved it, so the promote job resolves its own copy.
+      candidate_version: ${{ steps.inputs.outputs.version }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          # The split and the tokenizer are DVC-tracked, not in git.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: |
+          uv python install 3.12
+          uv sync --all-extras --frozen
+
+      - name: Write DVC credentials
+        env:
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          mkdir -p .dvc
+          umask 077
+          printf '[core]\n    remote: dagshub\n["remote \"dagshub\""]\n    url: https://%s:%s@dagshub.com/shhth0034/Raay.dvc\n' \
+            "$DAGSHUB_USER" "$DAGSHUB_TOKEN" > .dvc/config.local
+
+      - name: Pull the frozen test split and the tokenizer
+        run: |
+          # The `split` stage's outputs include data/processed/test.csv, and the
+          # tokenizer pointers carry the id2label config the gate attaches to
+          # the ORT session. Pulling the `split` stage (not the bare `preprocess`
+          # one) is what actually gets the test file.
+          uv run dvc pull split
+          uv run dvc pull models/baseline/final/config.json.dvc
+          uv run dvc pull models/baseline/final/tokenizer.json.dvc
+          uv run dvc pull models/baseline/final/tokenizer_config.json.dvc
+          test -f data/processed/test.csv
+          test -f models/baseline/final/config.json
+
+      - name: Configure MLflow
+        env:
+          MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI || 'https://dagshub.com/shhth0034/Raay.mlflow' }}
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          # Scoped to this job's later steps via GITHUB_ENV rather than the
+          # workflow-level env, so checkout and setup-uv never see the token.
+          {
+            echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+            echo "MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER"
+            echo "MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve the candidate graph
+        id: inputs
+        uses: ./.github/actions/resolve-candidate
+        with:
+          version: ${{ inputs.candidate_version }}
+          onnx: ${{ inputs.candidate_onnx }}
+
+      - name: Gate the candidate
+        id: decide
+        env:
+          CANDIDATE_VERSION: ${{ steps.inputs.outputs.version }}
+          CANDIDATE_ONNX: ${{ steps.inputs.outputs.onnx }}
+          FLOOR_TOLERANCE: ${{ inputs.floor_tolerance || '0.01' }}
+        run: |
+          set -euo pipefail
+          # The production graph for comparison comes from the DVC pointer, not
+          # from the registry: the runner has no way to know which alias the
+          # live service is actually resolving.
+          uv run dvc pull models/onnx/model_int8.onnx.dvc
+          uv run python scripts/promote_model.py \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --candidate-onnx "$CANDIDATE_ONNX" \
+            --production-onnx models/onnx/model_int8.onnx \
+            --tokenizer-dir models/baseline/final \
+            --floor-report reports/eval_baseline.json \
+            --parity-report reports/onnx_int8_parity.json \
+            --floor-tolerance "$FLOOR_TOLERANCE" \
+            --dry-run \
+            | tee gate.log
+          decision="$(python -c "
+          import json, pathlib
+          report = sorted(pathlib.Path('reports').glob('promotion_*.json'))[-1]
+          print(json.loads(report.read_text())['decision'])
+          ")"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          if [ "$decision" = "rejected" ]; then
+            echo "::error::The promotion gate rejected the candidate; see the step summary."
+            exit 1
+          fi
+
+      - name: Summarise the decision
+        if: always()
+        run: |
+          {
+            echo "## Promotion gate: v${{ steps.inputs.outputs.version }}"
+            echo ""
+            echo '```'
+            cat gate.log 2>/dev/null || echo "the gate did not run"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the decision artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promotion-decision-v${{ steps.inputs.outputs.version }}
+          path: reports/promotion_*.json
+          if-no-files-found: error
+
+  promote:
+    name: promote to production
+    needs: gate
+    # The approval gate. A reviewer sees the gate job's summary and artifact
+    # before this job is allowed to start, which is the whole point of splitting
+    # the workflow in two.
+    environment:
+      name: production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        run: |
+          uv python install 3.12
+          uv sync --all-extras --frozen
+
+      - name: Write DVC credentials
+        env:
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          mkdir -p .dvc
+          umask 077
+          printf '[core]\n    remote: dagshub\n["remote \"dagshub\""]\n    url: https://%s:%s@dagshub.com/shhth0034/Raay.dvc\n' \
+            "$DAGSHUB_USER" "$DAGSHUB_TOKEN" > .dvc/config.local
+
+      - name: Pull the frozen test split and the tokenizer
+        run: |
+          uv run dvc pull split
+          uv run dvc pull models/baseline/final/config.json.dvc
+          uv run dvc pull models/baseline/final/tokenizer.json.dvc
+          uv run dvc pull models/baseline/final/tokenizer_config.json.dvc
+
+      - name: Configure MLflow
+        env:
+          MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI || 'https://dagshub.com/shhth0034/Raay.mlflow' }}
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          {
+            echo "MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI"
+            echo "MLFLOW_TRACKING_USERNAME=$DAGSHUB_USER"
+            echo "MLFLOW_TRACKING_PASSWORD=$DAGSHUB_TOKEN"
+          } >> "$GITHUB_ENV"
+
+      # The version is the human's decision, passed through from the gate job.
+      # The path is resolved again here, on this runner: the gate job's copy
+      # lives on a machine that is already gone.
+      - name: Resolve the candidate graph
+        id: inputs
+        uses: ./.github/actions/resolve-candidate
+        with:
+          version: ${{ needs.gate.outputs.candidate_version }}
+          onnx: ${{ inputs.candidate_onnx }}
+
+      - name: Re-gate and move the Production alias
+        env:
+          CANDIDATE_VERSION: ${{ steps.inputs.outputs.version }}
+          CANDIDATE_ONNX: ${{ steps.inputs.outputs.onnx }}
+          DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Re-measured on purpose: an approval covers the numbers a human read,
+          # so the numbers have to still hold at the moment the alias moves.
+          # --dry-run is deliberately absent -- this is the job that is allowed
+          # to promote, and only because every gate passed again just now.
+          uv run dvc pull models/onnx/model_int8.onnx.dvc
+          uv run python scripts/promote_model.py \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --candidate-onnx "$CANDIDATE_ONNX" \
+            --production-onnx models/onnx/model_int8.onnx \
+            --tokenizer-dir models/baseline/final \
+            --floor-report reports/eval_baseline.json \
+            --parity-report reports/onnx_int8_parity.json
+
+      - name: Report the new Production version
+        if: always()
+        run: |
+          {
+            echo "## Production promoted to v${{ needs.gate.outputs.candidate_version }}"
+            echo ""
+            uv run python -c "
+          import mlflow
+          from raay.config.env import load_environment
+          from raay.enums.constants import Models
+          load_environment()
+          c = mlflow.tracking.MlflowClient()
+          print('Production ->', c.get_model_version_by_alias(Models.REGISTERED_BASELINE.value, 'Production'))
+          " 2>&1 || true
+          } >> "$GITHUB_STEP_SUMMARY"

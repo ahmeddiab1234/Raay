@@ -1,0 +1,48 @@
+{
+    "train_size": 25231,
+    "val_size": 3605,
+    "test_size": 7209,
+    "label_proportions": {
+        "train": {
+            "negative": 0.37331,
+            "neutral": 0.05069,
+            "positive": 0.576
+        },
+        "val": {
+            "negative": 0.37337,
+            "neutral": 0.05076,
+            "positive": 0.57587
+        },
+        "test": {
+            "negative": 0.37328,
+            "neutral": 0.05077,
+            "positive": 0.57595
+        }
+    },
+    "dialect_proportions": {
+        "train": {
+            "Dialects.ARABIZI": 0.03504,
+            "Dialects.EGYPTIAN": 0.1476,
+            "Dialects.GULF": 0.15326,
+            "Dialects.LEVANTINE": 0.152,
+            "Dialects.MAGHREBI": 0.05041,
+            "Dialects.MSA": 0.46169
+        },
+        "val": {
+            "Dialects.ARABIZI": 0.03551,
+            "Dialects.EGYPTIAN": 0.1448,
+            "Dialects.GULF": 0.14508,
+            "Dialects.LEVANTINE": 0.15312,
+            "Dialects.MAGHREBI": 0.0527,
+            "Dialects.MSA": 0.46879
+        },
+        "test": {
+            "Dialects.ARABIZI": 0.03399,
+            "Dialects.EGYPTIAN": 0.14024,
+            "Dialects.GULF": 0.15883,
+            "Dialects.LEVANTINE": 0.15661,
+            "Dialects.MAGHREBI": 0.04952,
+            "Dialects.MSA": 0.46081
+        }
+    }
+}

@@ -1,0 +1,50 @@
+{
+  "config": {
+    "min_corroborating_agents": 2,
+    "suspicious_model_score": 0.9,
+    "max_neutral_per_batch": 50,
+    "min_char_length": 10
+  },
+  "captured": {
+    "n_raw": 0,
+    "n_corrections": 0,
+    "n_confirmations": 0,
+    "model_label_mix": {}
+  },
+  "qa": {
+    "counts": {
+      "corroborated": 0,
+      "adjudicated": 0,
+      "disputed": 0,
+      "single_agent": 0,
+      "confirmation": 0,
+      "leak": 0,
+      "duplicate": 0,
+      "near_empty": 0
+    },
+    "n_trainable": 0,
+    "n_route_adjudicate_first": 0
+  },
+  "production_error_rate": {
+    "note": "Measured on captured production traffic, not on a draw from data/processed/test.csv. Only interpretable if the CS tool posts confirmations as well as disputes: a confirmation (model_label == corrected_label) is the denominator, and a tool that posts only disputes makes this number uninterpretable.",
+    "by_class": {},
+    "overall": null,
+    "n_observed": 0
+  },
+  "merge": {
+    "n_candidates": 0,
+    "n_eligible": 0,
+    "n_accepted": 0,
+    "n_collapsed_to_one_row_per_review": 0,
+    "n_suppressed_by_cap": 0,
+    "neutral_cap": 50,
+    "accepted_label_proportions": {
+      "positive": 0.0,
+      "negative": 0.0,
+      "neutral": 0.0
+    },
+    "cumulative_rows": 0,
+    "merged_path": "data/processed/train_feedback.csv"
+  },
+  "caveat": "There is no deployed service or CS tool yet, so every value here is a rehearsal until real traffic arrives. Two-agent corroboration also needs a roster with at least two real agent ids: until one exists every row is `single_agent` and nothing is trainable."
+}

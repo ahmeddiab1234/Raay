@@ -1,0 +1,288 @@
+name: retrain-check
+
+# Step 6 -- scheduled/automated retraining hooks. A cron re-runs the data
+# pipeline on newly versioned raw data and enters the SAME gate CI uses
+# (scripts/ci_metrics_gate.py at +/-0.005), minus one deliberate difference:
+# integer sizes/counts are ignored (--ignore '.*_size$') because a refresh is
+# the point at which they SHOULD move -- the gate compares the label/dialect
+# proportions strictly instead. See the gate's --ignore docstring.
+
+on:
+  schedule:
+    # Weekly (Monday 04:12 UTC), offset from promote.yml's 06:17 weekly re-gate
+    # so the two schedules never contend for a runner.
+    - cron: "12 4 * * 1"
+  workflow_dispatch:
+  repository_dispatch:
+    # Receiver for the Phase 6 step 3 producer: the nightly Airflow job
+    # (raay.inference.retrain_trigger) fires event_type `retrain` with
+    # client_payload {reason, threshold, trigger_date, psi, psi_column, triage}.
+    # `threshold` tightens/loosens this refresh run; the rest is read by the
+    # `notify` job below. The producer's POST needs a host PAT and is the one
+    # step not yet implemented -- the `notify` receiver is.
+    types: [retrain]
+
+# GitHub schedules cron only from the DEFAULT branch (main), so this workflow
+# file lives on main but checks out `dev` below and operates there -- data
+# changes land on dev by PR, then reach main via the normal fast-forward.
+#
+# contents: write is needed to push the data-refresh branch; pull-requests:
+# write to open the PR on dev. issues: write is used only by the Phase 6
+# step 3 notify job below, never by the refresh job.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+# A refresh either has already been fetched by a previous run (idempotent no-op)
+# or is mid-flight; never interleave two runs.
+concurrency:
+  group: retrain-data
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  # --frozen keeps the scheduled run from silently re-resolving uv.lock.
+  UV_FLAGS: "--frozen --all-extras"
+  DAGSHUB_USER: ${{ secrets.DAGSHUB_USER }}
+  DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+  # dvc repro's stages log to the shared raay_preprocessing experiment, same
+  # as CI.
+  MLFLOW_TRACKING_URI: https://dagshub.com/shhth0034/Raay.mlflow
+  MLFLOW_TRACKING_USERNAME: ${{ secrets.DAGSHUB_USER }}
+  MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
+  # A repository_dispatch can tighten/loosen the gate; schedule runs use 0.005.
+  REFRESH_THRESHOLD: ${{ github.event.client_payload.threshold || '0.005' }}
+
+jobs:
+  refresh:
+    name: re-split on new data and gate the proportions
+    runs-on: ubuntu-latest
+    steps:
+      # The metrics gate diffs against HEAD (the committed state on dev), so a
+      # shallow clone would have no baseline and fetch-depth 0 also fetches all
+      # remote refs (needed for the branch-exists idempotency check).
+      - name: Check out dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_FLAGS }}
+
+      - name: Write DVC credentials
+        # .dvc/config.local is git-ignored on purpose; the tracked
+        # .dvc/config only holds the remote URL. The token never reaches argv.
+        run: |
+          mkdir -p .dvc
+          cat > .dvc/config.local <<EOF
+          [core]
+              remote = dagshub
+          ['remote "dagshub"']
+              url = https://dagshub.com/shhth0034/Raay.dvc
+              auth = basic
+              user = ${DAGSHUB_USER}
+              password = ${DAGSHUB_TOKEN}
+          EOF
+
+      - name: Pull the raw input
+        # Only the raw CSV. Everything else is rebuilt by dvc repro below.
+        run: uv run ${{ env.UV_FLAGS }} dvc pull data/raw/Final_Data.csv.dvc
+
+      - name: Reproduce pipeline
+        # Target-scoped: a bare `dvc repro` would also run the `feedback` stage,
+        # whose dependency (data/feedback/reviewed/overrides.csv) this job never
+        # pulls. Same reason the status check below is scoped.
+        run: uv run ${{ env.UV_FLAGS }} dvc repro preprocess split
+
+      - name: Assert the pipeline is clean
+        # A dirty tree after repro is a pipeline/infra break, not a data
+        # refresh -- fail loudly rather than gate garbage. Scoped to the
+        # preprocess/split stages: this job never pulls the DVC-tracked serving
+        # artifacts (models/**), so a bare `dvc status` would always read them
+        # as "not in cache" here.
+        run: |
+          status=$(uv run ${{ env.UV_FLAGS }} dvc status preprocess split)
+          echo "$status"
+          if ! grep -q "up to date" <<<"$status"; then
+            echo "::error::DVC reported a dirty pipeline after repro -- that is" \
+              "not a plain data refresh."
+            exit 1
+          fi
+
+      - name: Early-exit when the raw data is unchanged
+        # dvc.lock embeds the raw input's md5, so "no new data" shows up as a
+        # clean lock after repro. Weekly no-op runs stop here, cheap.
+        run: |
+          if git diff --exit-code --quiet dvc.lock; then
+            echo "::notice::dvc.lock unchanged -- no new data since the last refresh."
+            exit 0
+          fi
+
+      - name: Set data-refresh date
+        id: stamp
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      # The "same gate" CI uses, with --ignore for integers: sizes/counts are
+      # the point of a refresh, so only label/dialect proportions are gated
+      # strictly at +/-0.005. new label/dialect keys are NOT ignored -- a new
+      # class is a structural change and fails like it should.
+      - name: Refresh gate (proportions only)
+        id: gate
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          date="${{ steps.stamp.outputs.date }}"
+          uv run ${{ env.UV_FLAGS }} python scripts/ci_metrics_gate.py \
+            --base HEAD \
+            --targets reports/split_metrics.json \
+            --ignore '.*_size$' \
+            --threshold "$REFRESH_THRESHOLD" \
+            --markdown "reports/data_refresh_$date.md" \
+            --json > "reports/data_refresh_$date.json"
+
+      - name: Upload the refresh report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-refresh-${{ steps.stamp.outputs.date }}
+          path: reports/data_refresh_*
+          if-no-files-found: ignore
+
+      - name: Open the data-refresh PR on dev
+        if: steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          date="${{ steps.stamp.outputs.date }}"
+          branch="retrain/data-$date"
+          if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            echo "::notice::Data-refresh branch $branch already exists; nothing to do."
+            exit 0
+          fi
+          git checkout -b "$branch"
+          git add dvc.lock reports/preprocess_metrics.json reports/split_metrics.json
+          git -c user.name="raay-bot" \
+              -c user.email="actions@github.com" \
+              commit -m "data refresh $date: re-split on newly versioned raw data"
+          git push origin "$branch"
+          gh pr create --base dev --head "$branch" \
+            --title "Data refresh $date" \
+            --body-file "reports/data_refresh_$date.md"
+
+      - name: Fail on refresh drift
+        if: steps.gate.outcome == 'failure'
+        run: |
+          echo "::error::The refreshed split's label/dialect proportions drifted" \
+            "beyond the refresh gate. A retrain + re-register decision is needed;" \
+            "see the step summary and the uploaded report."
+          exit 1
+
+      - name: Summarise the refresh
+        if: always()
+        run: |
+          date="${{ steps.stamp.outputs.date }}"
+          reason="${{ github.event.client_payload.reason || 'schedule' }}"
+          {
+            echo "## Data refresh check ($date) -- triggered by $reason"
+            echo ""
+            echo '```'
+            cat "reports/data_refresh_$date.md" 2>/dev/null || echo "no new data to report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Phase 6 step 3 -- the drift-alert receiver that finally has a producer.
+  #
+  # Deliberately a SEPARATE job, not a branch through `refresh`. On a psi_breach
+  # the raw data is by definition unchanged (the world moved, not the corpus), so
+  # the refresh job's own `dvc.lock` early-exit is correct and its body is a
+  # no-op. Letting a breach through that exit instead would reach
+  # `git commit` with nothing staged and fail the job -- so the early exit is
+  # left alone and this job does the part the refresh job cannot.
+  #
+  # It records the recommendation; it does not retrain. Fine-tuning needs a GPU
+  # and runs in scripts/kaggle_train_runs.py on Kaggle, and only
+  # scripts/promote_model.py may move the Production alias.
+  notify:
+    name: record the retrain trigger
+    # Only a dispatch carries a reason; a schedule run has no drift evidence.
+    if: github.event_name == 'repository_dispatch'
+    needs: refresh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out dev
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+
+      - name: Read the trigger payload
+        id: payload
+        env:
+          REASON: ${{ github.event.client_payload.reason }}
+          TRIGGER_DATE: ${{ github.event.client_payload.trigger_date }}
+          PSI: ${{ github.event.client_payload.psi }}
+          COLUMN: ${{ github.event.client_payload.psi_column }}
+          TRIAGE: ${{ github.event.client_payload.triage }}
+          REPO_URL: ${{ github.event.client_payload.source_report }}
+        run: |
+          {
+            echo "reason=${REASON:-unknown}"
+            echo "trigger_date=${TRIGGER_DATE:-unknown}"
+            echo "psi=${PSI:-unknown}"
+            echo "column=${COLUMN:-unknown}"
+            echo "triage=${TRIAGE:-unknown}"
+            echo "source=${REPO_URL:-unknown}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open the retrain-candidate issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REASON: ${{ steps.payload.outputs.reason }}
+          TRIGGER_DATE: ${{ steps.payload.outputs.trigger_date }}
+          PSI: ${{ steps.payload.outputs.psi }}
+          COLUMN: ${{ steps.payload.outputs.column }}
+          TRIAGE: ${{ steps.payload.outputs.triage }}
+          SOURCE: ${{ steps.payload.outputs.source }}
+        run: |
+          set -euo pipefail
+          title="Retrain candidate: $REASON on $TRIGGER_DATE"
+          # Idempotent: a retried dispatch must not stack duplicate issues.
+          # gh issue list is a single API call and this runs at most once a day.
+          if gh issue list --state all --search "$title in:title" --limit 1 \
+              --json number | grep -q '"number"'; then
+            echo "::notice::Issue for '$title' already exists; nothing to do."
+            exit 0
+          fi
+          {
+            echo "The nightly drift gate fired with reason \`$REASON\` on $TRIGGER_DATE."
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| worst column | \`$COLUMN\` |"
+            echo "| PSI | \`$PSI\` |"
+            echo "| triage | \`$TRIAGE\` |"
+            echo "| source report | $SOURCE |"
+            echo ""
+            echo "## What this does *not* do"
+            echo ""
+            echo "No retraining has run. Fine-tuning needs a GPU and happens in"
+            echo "\`scripts/kaggle_train_runs.py\` on Kaggle; only"
+            echo "\`scripts/promote_model.py\` may move the \`Production\` alias."
+            echo ""
+            echo "**Next step for a human:** start the Kaggle sweep, register the"
+            echo "candidate, then run the promotion gate."
+          } > /tmp/retrain-body.md
+          # No --label: a missing label would fail the run, and the title
+          # prefix is already the machine-readable marker the idempotency
+          # search above keys on.
+          gh issue create \
+            --title "$title" \
+            --body-file /tmp/retrain-body.md

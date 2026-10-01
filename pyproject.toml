@@ -9,19 +9,30 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.14.0",
+    "arabert>=1.0.1",
     "bentoml>=1.4.39",
     "datasets>=5.0.1",
     "dvc[s3]>=3.67.1",
+    "evidently>=0.4.21",
     "hydra-core>=1.3.5",
     "loguru>=0.7.3",
     "mlflow>=3.15.1",
     "numpy>=2.5.2",
+    "onnx>=1.16.0",
+    "onnxruntime>=1.18.0",
+    "onnxscript>=0.1.0",
     "pandas>=2.3.3",
+    "prometheus-client>=0.21.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.3",
+    "pyyaml>=6.0.3",
+    "rapidfuzz>=3.14.5",
+    "redis>=5.2.0",
+    "scikit-learn>=1.9.0",
     "torch>=2.13.0",
     "transformers>=5.15.1",
     "typer>=0.27.1",
+    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
@@ -34,10 +45,36 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "ipykernel>=7.3.0",
+    "locust>=2.27.0",
     "mypy>=2.3.1",
     "notebook>=7.6.2",
+    "pandas-stubs>=3.0.5.260730",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.16.4",
+    "seaborn>=0.13.2",
+    "types-pyyaml>=6.0.12.20260815",
+    "types-redis>=4.6.0.20241004",
+    "wordcloud>=1.9.6",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+# Pin first-party sources to src/ only. Auto-detection also adds the project
+# root to `src`, so a stray git-ignored top-level dir named like a dependency
+# (historically `mlflow/`, 882 MB of `uv run mlflow ui` state) makes ruff
+# classify `import mlflow` as first-party and invert the isort order CI sees.
+src = ["src"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+# mlflow has no type stubs and exposes symbols dynamically (submodule
+# re-exports), which older mypy (pre-commit mirror) cannot statically resolve.
+[[tool.mypy.overrides]]
+module = ["mlflow", "mlflow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"

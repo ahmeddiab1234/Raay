@@ -1,0 +1,46 @@
+# Seasonal events that can trigger a retrain in advance (Phase 6 step 3).
+#
+# A retrain fires *only* when an event is `confirmed: true` AND falls within
+# the lead window (default 21 days before it). Events marked `confirmed: false`
+# are placeholders for dates that are set by moon sighting and must be updated
+# each year. Rule-based Gregorian events (e.g. Black Friday) stay stable across
+# years and are confirmed.
+#
+# `lead_days` overrides the default 21-day window per event. `note` is written
+# verbatim into the trigger report (and to MLflow tags as context).
+
+events:
+  - name: ramadan
+    # Lunar: the actual start date is determined by moon sighting in the region
+    # where the training data is sourced. The value below is a placeholder to
+    # avoid a phantom retrain; update it annually when announced.
+    date: "2026-02-17"  # placeholder; change annually
+    confirmed: false
+    lead_days: 21
+    note: "Moon-sighting-announced. Confirm before enabling a retrain around it."
+
+  - name: eid_al_fitr
+    # Lunar; announced by moon sighting.
+    date: "2026-03-20"  # placeholder; change annually
+    confirmed: false
+    lead_days: 21
+    note: "Moon-sighting-announced. Not confirmed by rule."
+
+  - name: eid_al_adha
+    # Lunar; announced by moon sighting.
+    date: "2026-05-27"  # placeholder; change annually
+    confirmed: false
+    lead_days: 21
+    note: "Moon-sighting-announced. Not confirmed by rule."
+
+  - name: black_friday
+    rule: black_friday
+    confirmed: true
+    lead_days: 21
+    note: "Friday after the 4th Thursday in November."
+
+  - name: white_friday
+    rule: black_friday  # same anchor; use lead_days to move earlier if desired
+    confirmed: true
+    lead_days: 35
+    note: "Uses the same anchor as Black Friday; lead_days tuned to aim ahead of promotions."

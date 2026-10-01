@@ -1,0 +1,78 @@
+stages:
+  preprocess:
+    cmd: python -m raay.data.preprocess
+    deps:
+    - data/raw/Final_Data.csv
+    - src/raay/data/normalize_pipeline.py
+    - src/raay/data/preprocess.py
+    - src/raay/data/text_clean.py
+    params:
+    - preprocessing
+    outs:
+    - data/interim/normalized.csv
+    metrics:
+    - reports/preprocess_metrics.json:
+        cache: false
+  split:
+    cmd: python -m raay.data.split
+    deps:
+    - data/interim/normalized.csv
+    - src/raay/data/dialect.py
+    - src/raay/enums/constants.py
+    params:
+    - split
+    outs:
+    - data/processed/test.csv
+    - data/processed/train.csv
+    - data/processed/val.csv
+    metrics:
+    - reports/split_metrics.json:
+        cache: false
+  # Phase 6 step 4 (customer-service feedback loop).
+  #
+  # Train-only by design. Merging overrides into data/interim/normalized.csv
+  # would re-run `split`, change data/processed/test.csv, and make
+  # scripts/promote_model.py:check_frozen_split exit 2 with no report -- which
+  # would take the whole 14-gate promotion story down with it. The merged rows
+  # go to their own file that train.py concatenates onto train only, so the
+  # frozen test split never moves.
+  #
+  # NOT run by the CI pipeline job (whose `dvc status` scope stays
+  # `preprocess split`). A legitimate feedback merge changes
+  # reports/feedback_metrics.json, which lands in dvc.lock and would therefore
+  # trip `git diff --exit-code dvc.lock` under a metrics table that explains
+  # nothing. The stage is reproduced on the retrain host by the same operator
+  # flow retrain.yml uses. tests/test_feedback.py pins that the merge is
+  # byte-identical across runs, which is what that lock check would otherwise
+  # have verified.
+  #
+  # Every module this stage reads is listed, including its own: the `split`
+  # stage omits src/raay/data/split.py, so editing split logic does not
+  # currently invalidate it.
+  feedback:
+    cmd: python -m raay.data.feedback --mode merge
+    deps:
+    - data/feedback/reviewed/overrides.csv
+    - data/processed/test.csv
+    - src/raay/data/feedback.py
+    - src/raay/data/feedback_cli.py
+    - src/raay/data/feedback_merge.py
+    - src/raay/data/feedback_metrics.py
+    - src/raay/data/feedback_qa.py
+    - src/raay/data/feedback_review.py
+    - src/raay/data/feedback_schema.py
+    - src/raay/data/feedback_text.py
+    - src/raay/data/preprocess.py
+    - src/raay/data/dialect.py
+    - src/raay/enums/constants.py
+    params:
+    - feedback
+    # `preprocessing` is declared too: the leakage guard reuses
+    # dedup_similarity_threshold and merge reuses elongation_max_repeat, and
+    # DVC only tracks a params key that is listed here.
+    - preprocessing
+    outs:
+    - data/processed/train_feedback.csv
+    metrics:
+    - reports/feedback_metrics.json:
+        cache: false

@@ -1,0 +1,139 @@
+from enum import Enum
+
+
+class EnvVar(str, Enum):
+    """Environment variable names (resolved from the repo ``.env`` or the process env)."""
+
+    MLFLOW_TRACKING_URI = "MLFLOW_TRACKING_URI"
+    MLFLOW_ALLOW_FILE_STORE = "MLFLOW_ALLOW_FILE_STORE"
+    DATA_ROOT = "DATA_ROOT"
+    KAGGLE_DATA_DIR = "KAGGLE_DATA_DIR"
+    KAGGLE_TEACHER_DIR = "KAGGLE_TEACHER_DIR"
+
+
+class Experiments(str, Enum):
+    """MLflow experiment names."""
+
+    PREPROCESSING = "raay_preprocessing"
+    TRAINING = "raay_training"
+    BATCH = "raay_batch"
+
+
+class Models(str, Enum):
+    """Model identifiers (HF repo id or MLflow registry name)."""
+
+    TEACHER = "aubmindlab/bert-base-arabertv02"
+    REGISTERED_BASELINE = "ArabicSentiment"
+    REGISTERED_DISTILLED = "ArabicSentimentDistilled"
+
+
+class DefaultPaths(str, Enum):
+    """Repo-relative default paths for data, models, reports and outputs.
+
+    Entries are relative to the repo root. Kaggle sessions override the data /
+    teacher locations through ``DATA_ROOT`` and ``KAGGLE_TEACHER_DIR``.
+    """
+
+    RAW_DATA = "data/raw/Final_Data.csv"
+    INTERIM_DATA = "data/interim/normalized.csv"
+    PROCESSED_DATA = "data/processed"
+    TRAIN_SPLIT = "data/processed/train.csv"
+    VAL_SPLIT = "data/processed/val.csv"
+    TEST_SPLIT = "data/processed/test.csv"
+    PREPROCESS_METRICS = "reports/preprocess_metrics.json"
+    SPLIT_METRICS = "reports/split_metrics.json"
+    EVAL_BASELINE = "reports/eval_baseline.json"
+    EVAL_DISTILLED = "reports/eval_distilled.json"
+    EVAL_INT8 = "reports/eval_int8.json"
+    ONNX_PARITY = "reports/onnx_parity.json"
+    ONNX_INT8_PARITY = "reports/onnx_int8_parity.json"
+    SERVING_BENCHMARK = "reports/serving_benchmark.json"
+    QUEUE_BENCHMARK = "reports/queue_benchmark.json"
+    SCORING_INPUT = "data/scoring/input"
+    SCORING_OUTPUT = "data/scoring/output"
+    SCORING_REFERENCE = "data/scoring/reference/reference.csv"
+    # Engineered (embedding/OOV/dialect) copy of the reference panel, and the
+    # PCA basis frozen on it. Git-ignored with the rest of data/**: rebuild both
+    # with `--mode init-reference`. The basis is never refit per day, otherwise
+    # the axes rotate under the comparison.
+    SCORING_REFERENCE_ENGINEERED = "data/scoring/reference/reference_engineered.csv"
+    DRIFT_PCA_BASIS = "data/scoring/reference/pca_basis.joblib"
+    DRIFT_REPORTS = "reports/drift"
+    # Phase 6 step 2 (prediction drift) writes its own report family so the
+    # output-side verdict is readable without parsing the input-side one.
+    PREDICTION_DRIFT_REPORTS = "reports/prediction_drift"
+    # Phase 6 step 3 (retrain trigger) records the nightly *decision*, not a
+    # measurement. Tracked like the other report families because
+    # promote_model.py reads it from a fresh CI checkout to stamp the reason
+    # onto the promoted model version.
+    RETRAIN_TRIGGER_REPORTS = "reports/retrain_trigger"
+    # Phase 6 step 4 (customer-service feedback loop). Three layers, and the
+    # separation is load-bearing: `raw` is appended to by a running service (so
+    # it cannot be a DVC stage dep), `reviewed` is the QA'd subset an operator
+    # `dvc add`s like data/raw/Final_Data.csv, and the merged output is
+    # train-only so the frozen test split that promote_model.py hashes against
+    # dvc.lock never moves.
+    FEEDBACK_RAW = "data/feedback/raw"
+    FEEDBACK_REVIEWED = "data/feedback/reviewed/overrides.csv"
+    FEEDBACK_MERGED = "data/processed/train_feedback.csv"
+    FEEDBACK_METRICS = "reports/feedback_metrics.json"
+    FEEDBACK_SECRETS = "airflow_runtime/secrets/feedback_token"
+    ONNX_DIR = "models/onnx"
+    ONNX_MODEL = "models/onnx/model.onnx"
+    ONNX_DISTILLED = "models/onnx/distilled.onnx"
+    ONNX_INT8_MODEL = "models/onnx/model_int8.onnx"
+    BASELINE_MODEL = "models/baseline/final"
+    DISTILLED_MODEL = "models/distilled/final"
+    TEACHER_LOGITS_CACHE = "models/distilled/teacher_logits"
+    LOCAL_MLRUNS = "mlflow/mlruns"
+    OUTPUT_DIR_TRAIN = "outputs/train"
+    OUTPUT_DIR_DISTILL = "outputs/distill"
+    CONFIG_TRAIN = "configs/train.yaml"
+    CONFIG_DISTILL = "configs/distill.yaml"
+    # Phase 6 step 3: calendar events that can justify a seasonal retrain.
+    CONFIG_SEASONAL_EVENTS = "configs/seasonal_events.yaml"
+    PARAMS = "params.yaml"
+    LOGS = "logs"
+
+
+class SplitFileNames(str, Enum):
+    """Output filenames written under ``data/processed``."""
+
+    TRAIN = "train.csv"
+    VALIDATION = "val.csv"
+    TEST = "test.csv"
+
+
+class DataColumns(str, Enum):
+    """Enum for dataset column names."""
+
+    TEXT = "text"
+    LABEL = "label"
+    DIALECT = "dialect"
+    TEXT_LENGTH = "text_length"
+
+
+#: The sentiment classes, in the id2label order the ONNX graphs use.
+#: Lives here rather than beside either consumer: ``batch_score`` and
+#: ``prediction_drift`` both need it and they already reference each other, so
+#: a third module is the only placement that cannot close an import cycle.
+LABELS: tuple[str, ...] = ("positive", "negative", "neutral")
+
+
+class SplitNames(str, Enum):
+    """Enum for split names."""
+
+    TRAIN = "train"
+    VALIDATION = "validation"
+    TEST = "test"
+
+
+class Dialects(str, Enum):
+    """Coarse Arabic dialect buckets used by the heuristic detector."""
+
+    MSA = "msa"
+    EGYPTIAN = "egyptian"
+    GULF = "gulf"
+    LEVANTINE = "levantine"
+    MAGHREBI = "maghrebi"
+    ARABIZI = "arabizi"

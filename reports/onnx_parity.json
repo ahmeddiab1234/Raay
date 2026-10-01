@@ -1,0 +1,26 @@
+{
+  "model": {
+    "model_dir": "models/baseline/final",
+    "onnx_path": "models/onnx/model.onnx",
+    "opset": 17,
+    "max_length": 128,
+    "onnx_size_bytes": 540914438,
+    "max_abs_diff": 3.4570693969726562e-06,
+    "mean_abs_diff": 8.642673492431641e-07,
+    "argmax_match": true,
+    "tolerance": 0.0001,
+    "passed": true
+  },
+  "distilled": {
+    "model_dir": "models/distilled/final",
+    "onnx_path": "models/onnx/distilled.onnx",
+    "opset": 17,
+    "max_length": 128,
+    "onnx_size_bytes": 370796999,
+    "max_abs_diff": 1.430511474609375e-06,
+    "mean_abs_diff": 4.3710073782676773e-07,
+    "argmax_match": true,
+    "tolerance": 0.0001,
+    "passed": true
+  }
+}

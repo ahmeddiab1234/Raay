@@ -1,0 +1,26 @@
+{
+  "date": "2026-09-23",
+  "thresholds": {
+    "warn": 0.1,
+    "fail": 0.2
+  },
+  "reference": "data/scoring/reference/reference.csv",
+  "current": "data/scoring/output/2026-09-23.csv",
+  "columns": {
+    "predicted_label": {
+      "drift_score": 0.0003,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    },
+    "positive": {
+      "drift_score": 0.0193,
+      "stattest": "PSI",
+      "stattest_threshold": 0.1,
+      "drift_detected": false,
+      "decision": "PASS"
+    }
+  },
+  "overall": "PASS"
+}

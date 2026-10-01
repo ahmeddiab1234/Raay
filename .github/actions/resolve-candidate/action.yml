@@ -1,0 +1,106 @@
+name: resolve candidate graph
+description: >
+  Turn a registered model version into a local .onnx path, on the runner that
+  will gate it. Emits `version` and `onnx` outputs.
+
+
+# A path is only meaningful on the filesystem that produced it, so the gate job
+# cannot hand its candidate graph to the promote job through a job output --
+# the promote job would receive a path into a machine that no longer exists and
+# fail on a file it can never open. Each job therefore resolves the graph for
+# itself, from the *version* (a scalar, safe to pass between jobs) and the
+# registry, using this one definition so the two cannot drift apart.
+#
+# The version is what crosses the job boundary. Re-resolving it independently
+# in both jobs would be a bug of its own: on a scheduled run with no explicit
+# version, the gate job reads the Production alias, and if anything promoted in
+# between, the promote job would re-read the alias and gate a different model
+# than the one a human just approved.
+
+inputs:
+  version:
+    description: "Registered model version, or empty to use the Production alias"
+    required: false
+    default: ""
+  onnx:
+    description: "Explicit graph path to use instead of resolving from the registry"
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: "The version that was resolved"
+    value: ${{ steps.resolve.outputs.version }}
+  onnx:
+    description: "Path to the graph on this runner"
+    value: ${{ steps.resolve.outputs.onnx }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve
+      id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_ONNX: ${{ inputs.onnx }}
+      run: |
+        set -euo pipefail
+        version="$INPUT_VERSION"
+        if [ -z "$version" ]; then
+          version="$(uv run python -c "
+        from raay.enums.constants import Models
+        import mlflow
+        c = mlflow.tracking.MlflowClient()
+        print(c.get_model_version_by_alias(Models.REGISTERED_BASELINE.value, 'Production'))
+        ")"
+          echo "::notice::No version given; re-checking the current Production alias (v$version)"
+        fi
+        if [ -n "$INPUT_ONNX" ]; then
+          {
+            echo "version=$version"
+            echo "onnx=$INPUT_ONNX"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+        # Fall back to the registry: a version's artifacts include the graph
+        # that `log_variants_mlflow.py` registered from
+        # reports/models/<variant>_mlflow.
+        mkdir -p .gate
+        uv run python - "$version" <<'PY' >> "$GITHUB_OUTPUT"
+        import glob
+        import os
+        import sys
+
+        import mlflow
+        from raay.config.env import load_environment
+
+        load_environment()
+        version = sys.argv[1]
+        name = os.environ["MODEL_NAME"]
+        uri = mlflow.artifacts.download_artifacts(f"models:/{name}/{version}")
+        graphs = sorted(glob.glob(os.path.join(uri, "**", "*.onnx"), recursive=True))
+        if not graphs:
+            raise SystemExit(f"no .onnx graph in the artifacts of {name} v{version}")
+        if len(graphs) > 1:
+            # Guessing which graph a version ships would mean gating something
+            # other than what gets served, with no signal that it happened. Same
+            # reasoning as the sidecar refusal below.
+            listed = ", ".join(sorted(os.path.basename(g) for g in graphs))
+            raise SystemExit(
+                f"{name} v{version} ships several graphs ({listed}); pass "
+                "--candidate-onnx to say which one to gate"
+            )
+        # A dynamic-quantized graph has no external .onnx.data sidecar, which
+        # is exactly what we want here: the canary/distilled graph does, and
+        # it must not be silently gated as a single file.
+        for graph in graphs:
+            if os.path.exists(graph + ".data"):
+                raise SystemExit(
+                    f"{graph} has external weights; pass --candidate-onnx for a graph "
+                    "with its .onnx.data alongside it"
+                )
+        print(f"onnx={graphs[0]}")
+        PY

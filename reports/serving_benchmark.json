@@ -1,0 +1,73 @@
+{
+  "metadata": {
+    "onnx_path": "models/onnx/model_int8.onnx",
+    "tokenizer_dir": "models/baseline/final",
+    "backend": "onnxruntime-cpu",
+    "model_name": "aubmindlab/bert-base-arabertv02",
+    "max_length": 128,
+    "n_samples": 500,
+    "runs": 2
+  },
+  "batch_sizes": {
+    "1": {
+      "batch_size": 1,
+      "n_samples": 500,
+      "n_calls": 1000,
+      "n_runs": 2,
+      "chunk_latency_ms": {
+        "mean": 15.81785859206866,
+        "p50": 12.0409914998163,
+        "p95": 35.93599584928595,
+        "p99": 65.36596704070688
+      },
+      "latency_ms_per_req_equivalent": {
+        "mean": 15.81785859206866,
+        "p50": 12.0409914998163,
+        "p95": 35.93599584928595,
+        "p99": 65.36596704070688
+      },
+      "throughput_req_per_s": 63.21968262514477,
+      "accuracy": 0.822
+    },
+    "8": {
+      "batch_size": 8,
+      "n_samples": 500,
+      "n_calls": 126,
+      "n_runs": 2,
+      "chunk_latency_ms": {
+        "mean": 259.03272201593074,
+        "p50": 202.80311850001453,
+        "p95": 611.984650751765,
+        "p99": 778.3262159991864
+      },
+      "latency_ms_per_req_equivalent": {
+        "mean": 32.37909025199134,
+        "p50": 25.350389812501817,
+        "p95": 76.49808134397063,
+        "p99": 97.2907769998983
+      },
+      "throughput_req_per_s": 30.63901685756842,
+      "accuracy": 0.822
+    },
+    "32": {
+      "batch_size": 32,
+      "n_samples": 500,
+      "n_calls": 32,
+      "n_runs": 2,
+      "chunk_latency_ms": {
+        "mean": 1762.761382032295,
+        "p50": 1845.717161497305,
+        "p95": 2675.5640695537295,
+        "p99": 2992.0406436285707
+      },
+      "latency_ms_per_req_equivalent": {
+        "mean": 55.08629318850922,
+        "p50": 57.67866129679078,
+        "p95": 83.61137717355405,
+        "p99": 93.50127011339283
+      },
+      "throughput_req_per_s": 17.72786737815401,
+      "accuracy": 0.824
+    }
+  }
+}

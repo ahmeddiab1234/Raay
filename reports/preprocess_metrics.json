@@ -1,0 +1,13 @@
+{
+    "raw_row_count": 40046,
+    "near_empty_flagged_count": 5952,
+    "exact_duplicates_removed": 1939,
+    "near_duplicates_removed": 2062,
+    "final_row_count": 36045,
+    "percentages_pre_norm": {
+        "latin_chars": 4.09,
+        "diacritics": 2.28,
+        "elongated": 14.79,
+        "emoji": 10.53
+    }
+}
