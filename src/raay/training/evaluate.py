@@ -1,352 +1,61 @@
-"""Evaluation harness for the fine-tuned AraBERT baseline.
-
-Produces ``reports/eval_baseline.json`` with:
-    - overall accuracy / macro-F1 / weighted-F1,
-    - per-class (positive/negative/neutral) precision, recall, F1,
-    - the raw confusion matrix (JSON-serializable),
-    - a per-dialect stratified breakdown (accuracy + macro-F1 per dialect),
-    - the label -> id mapping and model metadata.
+"""Evaluate a checkpoint on the frozen test split.
 
 Run from the repo root:
 
     uv run python -m raay.training.evaluate \
         --model-dir models/baseline/final \
-        --test-file data/processed/test.csv \
-        --output reports/eval_baseline.json \
-        --experiment raay_training
-
-To benchmark an exported/quantized ONNX model instead of a torch checkpoint,
-point ``--onnx-path`` at the graph and keep ``--model-dir`` at its checkpoint
-dir (used for tokenizer + label map):
+        --output reports/eval_baseline.json
 
     uv run python -m raay.training.evaluate \
-        --model-dir models/baseline/final \
-        --onnx-path models/onnx/model_int8.onnx \
-        --test-file data/processed/test.csv \
-        --output reports/eval_int8.json
+        --model-dir models/baseline/final --onnx-path models/onnx/model_int8.onnx
 
-Also writes ``reports/mlflow_comparison.png`` (a bar chart comparing f1_macro
-across the ``raay_training`` MLflow runs) when ``--comparison-plot`` is set.
+By default it evaluates the fine-tuned PyTorch checkpoint in ``--model-dir``;
+``--onnx-path`` switches the same split to ONNX Runtime inference. Both write a
+JSON report with accuracy, macro/weighted F1, per-class precision/recall/F1, the
+confusion matrix, a dialect-stratified breakdown, and the metadata describing
+which backend produced it.
+
+Two label-encoding details are load-bearing:
+
+- ``evaluate_on_split`` reads ``id2label`` off ``model.config``. An ONNX Runtime
+  session has no ``.config``, so the caller must attach one (``promote_model.py``
+  does) or the labels fall back to alphabetical order and Neutral/Negative are
+  silently swapped.
+- The id order is the one in ``raay.enums.constants.LABELS``
+  (positive=0, negative=1, neutral=2), never retyped.
+
+Implementation lives in siblings -- ``eval_metrics`` (backends + split metrics),
+``eval_plot`` (the MLflow comparison bar chart) and ``eval_cli`` (argument
+parsing + report writing) -- re-exported here so ``raay.training.evaluate.<name>``
+keeps one import path. The promotion gate's structural tests read this module's
+public surface, not its layout.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import warnings
-from pathlib import Path
-from typing import Any
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import mlflow
-import numpy as np
-import onnxruntime as ort
-import pandas as pd
-import torch
-from loguru import logger
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    f1_score,
-    precision_recall_fscore_support,
+from raay.training.eval_cli import main
+from raay.training.eval_metrics import (
+    _per_class,
+    _preprocess,
+    dialect_breakdown,
+    evaluate_on_split,
+    load_model,
+    load_onnx_session,
+    predict,
 )
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from raay.training.eval_plot import plot_mlflow_comparison
 
-from raay.config.env import load_environment, mlflow_tracking_uri
-from raay.data.dialect import add_dialect_column
-from raay.enums.constants import DefaultPaths, Experiments, Models
+__all__ = [
+    "dialect_breakdown",
+    "evaluate_on_split",
+    "load_model",
+    "load_onnx_session",
+    "main",
+    "plot_mlflow_comparison",
+    "predict",
+]
 
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-
-try:
-    from arabert.preprocess import ArabertPreprocessor
-except ImportError:  # pragma: no cover - import path guard
-    ArabertPreprocessor = None
-
-
-def _preprocess(text: str, model_name: str) -> str:
-    if ArabertPreprocessor is not None:
-        return ArabertPreprocessor(model_name=model_name).preprocess(text)
-    return str(text)
-
-
-def load_model(model_dir: str):
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    id2label = getattr(getattr(model, "config", None), "id2label", None)
-    return model, tokenizer, id2label
-
-
-def load_onnx_session(
-    onnx_path: str, *, session_options: ort.SessionOptions | None = None
-) -> ort.InferenceSession:
-    """Load an exported ONNX model for evaluation (frontends an ORT session).
-
-    ``session_options`` is optional and defaults to None, i.e. exactly the
-    previous behaviour for every existing caller. The promotion gate passes
-    tuned options because it has to compare the latency of two sessions in one
-    process, and two default thread pools with spin-waiting interfere with each
-    other badly enough to invent a 25% difference between identical graphs.
-    Callers that are not measuring latency should leave it alone.
-    """
-    if session_options is None:
-        return ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-    return ort.InferenceSession(
-        onnx_path, sess_options=session_options, providers=["CPUExecutionProvider"]
-    )
-
-
-def predict(
-    model: Any, tokenizer: Any, texts: list[str], model_name: str, max_length: int
-) -> np.ndarray:
-    """Predict labels; ``model`` is either a torch Module or an ORT session."""
-    ort_session = isinstance(model, ort.InferenceSession)
-    probs_list: list[np.ndarray] = []
-    batch_size = 32
-    for i in range(0, len(texts), batch_size):
-        batch = [_preprocess(t, model_name) for t in texts[i : i + batch_size]]
-        batch_enc = tokenizer(
-            batch,
-            truncation=True,
-            padding=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-        if ort_session:
-            logits = model.run(
-                ["logits"],
-                {
-                    key: batch_enc[key].numpy()
-                    for key in ("input_ids", "attention_mask")
-                },
-            )[0]
-        else:
-            with torch.no_grad():
-                logits = model(**batch_enc).logits.detach().numpy()
-        probs_list.append(logits)
-    return np.argmax(np.concatenate(probs_list, axis=0), axis=-1)
-
-
-def _per_class(
-    y_true: np.ndarray, y_pred: np.ndarray, labels: list[int], names: list[str]
-) -> dict[str, dict]:
-    precision, recall, f1, support = precision_recall_fscore_support(
-        y_true, y_pred, labels=labels, zero_division=0
-    )
-    precision, recall, f1 = (
-        np.atleast_1d(precision),
-        np.atleast_1d(recall),
-        np.atleast_1d(f1),
-    )
-    support = (
-        np.atleast_1d(support)
-        if support is not None
-        else np.zeros_like(precision, dtype=int)
-    )
-    result = {}
-    for i, name in enumerate(names):
-        result[name] = {
-            "precision": float(precision[i]),
-            "recall": float(recall[i]),
-            "f1": float(f1[i]),
-            "support": int(support[i]),
-        }
-    return result
-
-
-def evaluate_on_split(
-    df: pd.DataFrame,
-    model: Any,
-    tokenizer: Any,
-    model_name: str,
-    max_length: int,
-) -> dict[str, Any]:
-    id2label = getattr(getattr(model, "config", None), "id2label", None)
-    raw_labels = df["label"].tolist()
-    # Map string labels to indices via id2label if present, else textual order.
-    if id2label and raw_labels and isinstance(raw_labels[0], str):
-        id2label = {int(k): v for k, v in id2label.items()}
-        label_to_id = {v: k for k, v in id2label.items()}
-        y_true = np.array([label_to_id[lab] for lab in raw_labels])
-        label_names = [id2label[i] for i in sorted(id2label)]
-    else:
-        labels_sorted = sorted(set(raw_labels))
-        label_to_id = {lab: i for i, lab in enumerate(labels_sorted)}
-        y_true = np.array([label_to_id[lab] for lab in raw_labels])
-        label_names = labels_sorted
-    label_ids = list(range(len(label_names)))
-
-    y_pred = predict(model, tokenizer, df["text"].tolist(), model_name, max_length)
-
-    cm = confusion_matrix(y_true, y_pred, labels=label_ids)
-    per_class = _per_class(y_true, y_pred, label_ids, label_names)
-    accuracy = float(accuracy_score(y_true, y_pred))
-    f1_macro = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
-    f1_weighted = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
-
-    report = {
-        "label_names": label_names,
-        "accuracy": accuracy,
-        "f1_macro": f1_macro,
-        "f1_weighted": f1_weighted,
-        "per_class": per_class,
-        "confusion_matrix": cm.tolist(),
-        "sample_size": len(df),
-    }
-    return report
-
-
-def dialect_breakdown(
-    df: pd.DataFrame,
-    model: Any,
-    tokenizer: Any,
-    model_name: str,
-    max_length: int,
-) -> dict[str, dict[str, float]]:
-    if "dialect" not in df.columns:
-        df = add_dialect_column(df, text_col="text")
-
-    breakdown: dict[str, dict[str, float]] = {}
-    for dialect, group in df.groupby("dialect"):
-        group = group.copy()
-        if group["label"].nunique() < 2 or len(group) < 2:
-            # Degenerate slice: report count only.
-            breakdown[str(dialect)] = {"count": len(group)}
-            continue
-        rep = evaluate_on_split(group, model, tokenizer, model_name, max_length)
-        breakdown[str(dialect)] = {
-            "count": len(group),
-            "accuracy": rep["accuracy"],
-            "f1_macro": rep["f1_macro"],
-        }
-    return breakdown
-
-
-def plot_mlflow_comparison(
-    experiment_name: str,
-    output_path: str,
-    tracking_uri: str | None = None,
-) -> None:
-    """Bar chart of f1_macro per MLflow run in the training experiment."""
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
-    client = mlflow.tracking.MlflowClient()
-    exp = client.get_experiment_by_name(experiment_name)
-    if exp is None:
-        logger.warning(f"Experiment {experiment_name!r} not found; skipping plot.")
-        return
-    runs = client.search_runs(experiment_ids=[exp.experiment_id])
-    if not runs:
-        logger.warning(f"No runs found for {experiment_name!r}; skipping plot.")
-        return
-
-    labels: list[str] = []
-    f1s: list[float] = []
-    for run in runs:
-        metrics = run.data.metrics
-        if "f1_macro" not in metrics and "eval_f1_macro" not in metrics:
-            continue
-        key = "f1_macro" if "f1_macro" in metrics else "eval_f1_macro"
-        f1s.append(float(metrics[key]))
-        params = run.data.params
-        lr = params.get("learning_rate", "?")
-        bs = params.get("batch_size", "?")
-        labels.append(
-            f"{run.data.tags.get('mlflow.runName', run.info.run_id[:8])}\nlr={lr} bs={bs}"
-        )
-
-    if not f1s:
-        logger.warning("No runs had f1_macro metrics; skipping plot.")
-        return
-
-    plt.figure(figsize=(max(8, 0.9 * len(labels)), 5))
-    bars = plt.bar(range(len(f1s)), f1s, color="#4C72B0")
-    best = int(np.argmax(f1s))
-    bars[best].set_color("#55A868")
-    plt.xticks(range(len(f1s)), labels, rotation=0)
-    plt.ylabel("f1_macro")
-    plt.title(f"MLflow run comparison — {experiment_name}")
-    plt.ylim(0, 1.0)
-    plt.tight_layout()
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path, dpi=120)
-    plt.close()
-    logger.info(f"Wrote comparison plot: {output_path}")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-dir", default=DefaultPaths.BASELINE_MODEL.value)
-    parser.add_argument(
-        "--onnx-path",
-        default=None,
-        help=(
-            "If set, run inference through this exported ONNX model via "
-            "onnxruntime instead of the PyTorch checkpoint in --model-dir."
-        ),
-    )
-    parser.add_argument("--test-file", default=DefaultPaths.TEST_SPLIT.value)
-    parser.add_argument("--model-name", default=Models.TEACHER.value)
-    parser.add_argument("--output", default=DefaultPaths.EVAL_BASELINE.value)
-    parser.add_argument("--experiment", default=Experiments.TRAINING.value)
-    parser.add_argument("--tracking-uri", default=None)
-    parser.add_argument("--max-length", type=int, default=128)
-    parser.add_argument("--comparison-plot", default=None)
-    args = parser.parse_args()
-
-    load_environment()
-    tracking_uri = (
-        args.tracking_uri
-        if args.tracking_uri
-        else mlflow_tracking_uri(default="file:./mlruns")
-    )
-    mlflow.set_tracking_uri(tracking_uri)
-
-    logger.info(f"Loading test data from {args.test_file}")
-    test_df = pd.read_csv(args.test_file)
-
-    metadata = {
-        "model_dir": args.model_dir,
-        "model_name": args.model_name,
-        "max_length": args.max_length,
-        "tokenizer_version": None,
-    }
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
-
-    if args.onnx_path:
-        logger.info(f"Loading ONNX model from {args.onnx_path}")
-        model = load_onnx_session(args.onnx_path)
-        metadata["onnx_path"] = args.onnx_path
-        metadata["backend"] = "onnxruntime"
-        metadata["tokenizer_version"] = getattr(tokenizer, "vocab_size", None)
-    else:
-        logger.info(f"Loading model from {args.model_dir}")
-        model, tokenizer, _ = load_model(args.model_dir)
-        metadata["tokenizer_version"] = getattr(tokenizer, "vocab_size", None)
-
-    report = evaluate_on_split(
-        test_df, model, tokenizer, args.model_name, args.max_length
-    )
-    report["dialect_breakdown"] = dialect_breakdown(
-        test_df, model, tokenizer, args.model_name, args.max_length
-    )
-    report["metadata"] = metadata
-
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    logger.info(f"Wrote evaluation report: {args.output}")
-    logger.info(
-        f"Test accuracy={report['accuracy']:.4f} f1_macro={report['f1_macro']:.4f}"
-    )
-
-    if args.comparison_plot:
-        plot_mlflow_comparison(
-            args.experiment, args.comparison_plot, tracking_uri=args.tracking_uri
-        )
+_PRIVATE_REEXPORTS = (_per_class, _preprocess)
 
 
 if __name__ == "__main__":

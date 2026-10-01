@@ -1,28 +1,12 @@
-"""Quantize an exported ONNX model to INT8 and re-evaluate it.
-
-Phase 3 (compression/optimization) step 4: apply dynamic quantization
-(``onnxruntime.quantization.quantize_dynamic`` — the simplest, most reliable
-option for transformers) to a frozen ONNX graph and re-run the held-out
-evaluation through the quantized model.
-
-Run from the repo root:
+"""Quantize an exported ONNX graph to INT8, verify parity, evaluate, log to MLflow.
 
     uv run python -m raay.inference.quantize_onnx
+    uv run python -m raay.inference.quantize_onnx \
+        --onnx-path models/onnx/distilled.onnx --tokenizer-dir models/distilled/final
 
-Quantizes ``models/onnx/model.onnx`` -> ``models/onnx/model_int8.onnx``:
-
-    - verifies the INT8 graph still runs and compares its logits against the
-      FP32 graph on a fixed set of Arabic reviews (writes
-      ``reports/onnx_int8_parity.json``),
-    - re-evaluates on ``data/processed/test.csv`` through the INT8 model,
-      reusing the exact ``evaluate.py`` metrics so ``reports/eval_int8.json``
-      has the same schema as ``eval_baseline.json`` / ``eval_distilled.json``,
-    - logs the quantized artifact + parity/eval metrics to ``raay_training``.
-
-Point ``--onnx-path`` at ``models/onnx/distilled.onnx`` (+ ``--tokenizer-dir
-models/distilled/final``) to quantize the student instead.
-
-Requires deps: onnx, onnxruntime, onnxscript.
+Emits ``models/onnx/model_int8.onnx`` (self-contained), ``reports/onnx_int8_parity.json``
+and ``reports/eval_int8.json`` (same schema as ``eval_baseline.json``). The
+quantization + parity math is in ``quantize_core``; this module is the run.
 """
 
 from __future__ import annotations
@@ -34,17 +18,19 @@ from pathlib import Path
 from typing import Any
 
 import mlflow
-import numpy as np
-import onnx
-import onnxruntime as ort
 import pandas as pd
 from loguru import logger
-from onnxruntime.quantization import QuantType, quantize_dynamic
+from onnxruntime.quantization import QuantType
 from transformers import AutoConfig, AutoTokenizer
 
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
-from raay.inference.export_onnx import _preprocess, _repair_artifact_locations
+from raay.inference.export_onnx import _repair_artifact_locations
+from raay.inference.quantize_core import (
+    _tokenizer_dir_for,
+    parity_report,
+    quantize_to_int8,
+)
 from raay.training.evaluate import (
     dialect_breakdown,
     evaluate_on_split,
@@ -53,92 +39,7 @@ from raay.training.evaluate import (
 
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
-_SAMPLE_TEXTS: tuple[str, ...] = (
-    "هذا المنتج ممتاز والجودة عالية جدا",
-    "المنتج وصل متأخر والجودة رديئة",
-    "الطلبية وصلت بسرعة والحاجة تمام جدا شكرا",
-    "حسبي الله ونعم الوكيل ياخي الجودة خايسة",
-    "المنتج محايد شكله عادي",
-    "الخدمة ممتازة وسعر مناسب لكن التوصيل بطيء",
-)
-
-_TOKENIZER_DIRS = {
-    "model": DefaultPaths.BASELINE_MODEL.value,
-    "distilled": DefaultPaths.DISTILLED_MODEL.value,
-}
-
-
-def _tokenizer_dir_for(onnx_path: str) -> str:
-    return _TOKENIZER_DIRS.get(
-        Path(onnx_path).stem, str(Path(onnx_path).parent.parent / "final")
-    )
-
-
-def _encode(tokenizer: Any, texts: list[str], max_length: int) -> dict[str, Any]:
-    enc = tokenizer(
-        [_preprocess(t) for t in texts],
-        truncation=True,
-        padding=True,
-        max_length=max_length,
-        return_tensors="pt",
-    )
-    return {key: enc[key] for key in ("input_ids", "attention_mask")}
-
-
-def _run(session: ort.InferenceSession, enc: dict[str, Any]) -> np.ndarray:
-    return session.run(
-        ["logits"],
-        {key: value.numpy() for key, value in enc.items()},
-    )[0]
-
-
-def quantize_to_int8(onnx_path: str, output_path: str, per_channel: bool = True) -> str:
-    """Dynamically quantize ``onnx_path`` to INT8 at ``output_path``.
-
-    The torch dynamo exporter leaves stale ``value_info`` whose declared shapes
-    conflict with onnx shape inference; onnxruntime's quantizer re-runs a
-    strict file-based inference and raises on those mismatches, and its
-    external-weights churn breaks across temp dirs. We therefore (a) inline the
-    weights into a self-contained FP32 graph with the conflicting ``value_info``
-    dropped so fresh inference cannot clash, and (b) quantize that. The
-    quantized output is likewise self-contained (INT8 weights inlined)."""
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    model = onnx.load(onnx_path)
-    del model.graph.value_info[:]
-    embedded = str(Path(output_path).with_name(f"{Path(onnx_path).stem}.fp32.onnx"))
-    onnx.save_model(model, embedded, save_as_external_data=False)
-    try:
-        quantize_dynamic(
-            model_input=embedded,
-            model_output=output_path,
-            weight_type=QuantType.QInt8,
-            per_channel=per_channel,
-            reduce_range=False,
-        )
-    finally:
-        Path(embedded).unlink(missing_ok=True)
-    logger.info(f"Quantized {onnx_path} -> {output_path}")
-    return output_path
-
-
-def parity_report(
-    fp32_path: str, int8_path: str, tokenizer: Any, max_length: int
-) -> dict[str, Any]:
-    """Compare FP32 vs INT8 ONNX logits on a fixed sample set."""
-    fp32 = load_onnx_session(fp32_path)
-    int8 = load_onnx_session(int8_path)
-    enc = _encode(tokenizer, list(_SAMPLE_TEXTS), max_length)
-    fp32_out = _run(fp32, enc)
-    int8_out = _run(int8, enc)
-    diff = np.abs(fp32_out - int8_out)
-    return {
-        "n_samples": len(_SAMPLE_TEXTS),
-        "max_abs_diff": float(diff.max()),
-        "mean_abs_diff": float(diff.mean()),
-        "label_agreement": float(
-            np.mean(np.argmax(fp32_out, axis=-1) == np.argmax(int8_out, axis=-1))
-        ),
-    }
+__all__ = ["_tokenizer_dir_for", "main", "parity_report", "quantize_to_int8"]
 
 
 def _write_json(results: Any, path: str) -> None:

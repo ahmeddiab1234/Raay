@@ -3,7 +3,9 @@ stages:
     cmd: python -m raay.data.preprocess
     deps:
     - data/raw/Final_Data.csv
+    - src/raay/data/normalize_pipeline.py
     - src/raay/data/preprocess.py
+    - src/raay/data/text_clean.py
     params:
     - preprocessing
     outs:
@@ -53,6 +55,13 @@ stages:
     - data/feedback/reviewed/overrides.csv
     - data/processed/test.csv
     - src/raay/data/feedback.py
+    - src/raay/data/feedback_cli.py
+    - src/raay/data/feedback_merge.py
+    - src/raay/data/feedback_metrics.py
+    - src/raay/data/feedback_qa.py
+    - src/raay/data/feedback_review.py
+    - src/raay/data/feedback_schema.py
+    - src/raay/data/feedback_text.py
     - src/raay/data/preprocess.py
     - src/raay/data/dialect.py
     - src/raay/enums/constants.py

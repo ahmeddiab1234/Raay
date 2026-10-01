@@ -106,7 +106,10 @@ def test_cached_teacher_logits_reuses_file(tmp_path, monkeypatch):
         calls.append(len(texts))
         return np.zeros((len(texts), 3))
 
-    monkeypatch.setattr("raay.training.distill._teacher_logits", fake_teacher)
+    # Patched on ``distill_teacher`` (not the ``raay.training.distill`` façade):
+    # that is the module that actually calls it, so patching the façade would
+    # silently leave the real teacher forward in place.
+    monkeypatch.setattr("raay.training.distill_teacher._teacher_logits", fake_teacher)
     logits = _cached_teacher_logits(None, None, ["a", "b"], "train", cfg)
 
     # Cache hit: the (expensive) teacher forward must not run.
@@ -129,7 +132,7 @@ def test_cached_teacher_logits_recomputes_on_mismatch(tmp_path, monkeypatch):
     def fake_teacher(model, tokenizer, texts, cfg_):
         return np.tile(np.arange(3, dtype=float), (len(texts), 1))
 
-    monkeypatch.setattr("raay.training.distill._teacher_logits", fake_teacher)
+    monkeypatch.setattr("raay.training.distill_teacher._teacher_logits", fake_teacher)
     logits = _cached_teacher_logits(None, None, ["a", "b"], "train", cfg)
 
     np.testing.assert_array_equal(logits, np.tile(np.arange(3.0), (2, 1)))

@@ -43,7 +43,7 @@ An end-to-end MLOps pipeline for classifying Arabic product reviews (Positive / 
 
 The project covers the full ML lifecycle: data versioning, experiment tracking, model training, inference optimization, and model serving.
 
-**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly with a PSI drift gate, rolled out via a **shadow-then-canary** deployment (5/95 → 100 % on Prometheus-fed stage gates), and guarded end to end by an automated **CI/CD pipeline** — a ±0.005 split-metrics gate on every PR, a Docker image built only on `main`, staged deploys with automatic rollback, a 14-gate promotion gate that is the only mover of the `Production` alias, and weekly retrain hooks that turn newly versioned data into a reviewable PR.
+**Current state:** an AraBERT teacher fine-tuned to **84.92 %** accuracy, distilled to a 6-layer student, exported to ONNX, dynamically quantized to INT8 (**85.03 %** accuracy, **136 MB**, **p50 ≈ 12 ms** single-call on CPU), served through a containerized BentoML API, re-scored nightly and watched by a **three-stage drift chain** — engineered input features, prediction drift with a triage that names which half moved, then a retrain trigger that dispatches to GitHub — rolled out via a **shadow-then-canary** deployment (5/95 → 100 % on Prometheus-fed stage gates), fed by an authenticated **customer-service feedback loop**, and guarded end to end by an automated **CI/CD pipeline** — a ±0.005 split-metrics gate on every PR, a Docker image built only on `main`, staged deploys with automatic rollback, a 14-gate promotion gate that is the only mover of the `Production` alias, and weekly retrain hooks that turn newly versioned data into a reviewable PR.
 
 ---
 
@@ -57,15 +57,17 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | **Model Optimization**     | Knowledge distillation (6-layer student), ONNX export, dynamic INT8 quantization                               |
 | **Real-Time Serving**      | BentoML REST API (`/predict`, `/health`), containerized via Docker Compose                                 |
 | **Near-Real-Time Scoring** | Client-side Redis micro-batch consumer (drain-by-size*or* drain-by-time)                                     |
-| **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate vs. a fixed reference panel                                      |
-| **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift                                                  |
+| **Batch Scoring & Drift**  | Nightly re-scoring + Evidently PSI drift gate over 17 engineered columns (incl. a frozen PCA of AraBERT embeddings) |
+| **Prediction Drift**      | Class-mix + confidence gates against two references, with a 2×2 triage naming *which half* moved          |
+| **Retrain Trigger**       | Drift breach or confirmed seasonal event → GitHub `repository_dispatch`, with three deliberate non-firers |
+| **Orchestration**          | Airflow DAG (daily 03:00 UTC) driving input → score → drift → prediction-drift → trigger → feedback      |
 | **Canary Rollout**         | Standalone nginx-fronted project: shadow-mirror then 5/95→100 %, gated on Prometheus |
 | **Scheduled Retraining**   | Weekly `retrain.yml` re-runs DVC on newly versioned data, gates proportions, opens a `dev` PR |
 | **Human Feedback Loop**     | Authenticated CS override capture, two-agent QA ladder, train-only merge of hard negatives |
 | **Experiment Tracking**    | MLflow runs, metrics, artifacts, and a Model Registry with `Production` / `Canary` aliases                  |
 | **Data Versioning**        | DVC-tracked raw/interim/processed data with a configurable remote (local / S3)                                 |
 | **Code Quality**           | Ruff linter & formatter, mypy static type checking, pre-commit hooks (pre-commit + pre-push)                   |
-| **Testing**                | pytest suite (703 unit tests, hermetic — no GPU, no network, no servers)                                 |
+| **Testing**                | pytest suite (704 unit tests, hermetic — no GPU, no network, no servers)                                  |
 | **Configuration**          | Hydra for training/distillation; `params.yaml` for the DVC data stages                                        |
 | **Typed Schemas**          | Pydantic I/O models for the serving contract                                                                   |
 | **Structured Logging**     | Loguru for structured, leveled logging                                                                         |
@@ -86,9 +88,11 @@ The project covers the full ML lifecycle: data versioning, experiment tracking, 
 | Model Serving        | BentoML + Docker Compose                      |
 | Load Testing         | Locust (HTTP before/after)                    |
 | Streaming / Queue    | Redis (`redis:7-alpine`)                    |
-| Drift Monitoring     | Evidently (PSI)                               |
+| Drift Monitoring     | Evidently (PSI) over 17 engineered columns        |
+| Drift Embeddings     | AraBERT encoder + frozen PCA basis (fit once on the reference) |
 | Orchestration        | Apache Airflow 2.10.5 (host-isolated)         |
 | Traffic Shifting     | nginx (weighted upstream)                     |
+| CI/CD & Triggers     | GitHub Actions (Actions, reusable composite action) |
 | Config Management    | Hydra (`configs/`) + `params.yaml`        |
 | Data Validation      | Pydantic                                      |
 | Linting & Formatting | Ruff                                          |
@@ -105,13 +109,14 @@ raay/
 ├── src/raay/                       # Main Python package
 │   ├── data/                       #   Preprocessing, splitting, dialect, feedback QA
 │   ├── training/                   #   Fine-tuning, distillation, evaluation
-│   ├── inference/                  #   ONNX export/quantize, queue consumer, batch scoring
-│   ├── serving/                    #   BentoML service, benchmark, feedback capture
+│   ├── inference/                  #   ONNX export/quantize, queue consumer, batch scoring,
+│   │                               #     drift_features · prediction_drift · retrain_trigger
+│   ├── serving/                    #   BentoML service, benchmark, canary agent, feedback capture
 │   ├── config/                     #   Env loading, data config
 │   └── enums/                      #   Shared constants (paths, experiments, models)
 │
-├── airflow/dags/                   # Nightly batch-scoring + feedback-merge DAG
-├── configs/                        # Hydra configs (train.yaml, distill.yaml)
+├── airflow/dags/                   # Nightly DAG: score → drift → prediction-drift → trigger → feedback-merge
+├── configs/                        # Hydra configs (train.yaml, distill.yaml) + seasonal_events.yaml
 ├── deploy/                         # nginx_canary.conf (generated front) · prometheus.yml
 │
 ├── data/                           # DVC-tracked (git-ignored)
@@ -119,17 +124,18 @@ raay/
 │   ├── interim/                    #   normalized.csv
 │   ├── processed/                  #   train/val/test splits + train_feedback.csv (train-only)
 │   ├── feedback/                   #   raw/ captures · reviewed/ (DVC pointer, human-owned)
-│   └── scoring/                    #   input/ · output/ · reference/ panels
+│   └── scoring/                    #   input/ · output/ · reference/ panels + frozen pca_basis.joblib
 │
 ├── models/                         # Trained checkpoints + ONNX graphs
 │   ├── baseline/ · distilled/      #   HF checkpoints
 │   └── onnx/                       #   model.onnx · distilled.onnx · model_int8.onnx
 │
-├── reports/                        # Committed evidence (evals, benchmarks, drift, locust)
-├── scripts/                        # Sweeps, benchmarks, registry + canary ops
+├── reports/                        # Committed evidence (evals, benchmarks, drift/,
+│                                   #   prediction_drift/, retrain_trigger/, locust, feedback_metrics)
+├── scripts/                        # Sweeps, benchmarks, registry + canary + promote ops
 ├── tests/                          # Unit tests (hermetic)
 ├── notebooks/                      # EDA
-├── docs/                           # project_analysis.md · labeling_guidelines.md
+├── docs/                           # pr1–pr7 write-ups · labeling_guidelines.md · commands_run_p*.txt
 │
 ├── bentofile.yaml                  # Bento build recipe (serving-only deps + baked int8)
 ├── docker-compose.yml              # prod worker + redis
@@ -241,7 +247,7 @@ uv run pre-commit install --hook-type pre-push
 uv run ruff check .          # Lint
 uv run ruff format --check . # Format check
 uv run mypy src              # Type check
-uv run pytest                # Tests (96)
+uv run pytest                # Tests (704)
 ```
 
 ---
@@ -468,11 +474,50 @@ uv run python -m raay.inference.batch_score --mode drift    --date 2026-09-24
 | `score`          | the day's input                | `data/scoring/output/{date}.csv` (3-class probs + `predicted_label` / `predicted_score`) |
 | `drift`          | reference vs. the day's output | `reports/drift/{date}.json`                                                                  |
 
-The drift gate is **Evidently PSI** on `predicted_label` + `positive`: `< 0.1` PASS, `< 0.2` WARN, `≥ 0.2` FAIL (overall = worst column). Every mode logs to the `raay_batch` MLflow experiment.
+The drift gate is **Evidently PSI**: `< 0.1` PASS, `< 0.2` WARN, `≥ 0.2` FAIL (overall = worst column). Every mode logs to the `raay_batch` MLflow experiment. `--no-engineer` falls back to the two original output columns, so the job still runs on a runner that has no encoder weights.
 
-Latest verdicts: `2026-09-23` **PASS** (label PSI 0.0003, positive 0.0193) · `2026-09-24` **PASS** (label 0.0034, positive 0.0348).
+> **Do not shrink `--samples` for `init-reference`.** The reference size sets the PSI noise floor: at 200 rows the gate returned **FAIL** with the tail PCs at 0.20/0.32/0.22, because pc8–pc10 carry only ~1.3% of the variance combined (pc1 alone is 0.72) and two small samples disagree on their bin proportions. At the production 1000 the same three read 0.024/0.042/0.037.
 
-### 5.6 Airflow Orchestration
+Latest verdicts: `2026-10-01` **PASS** (max PSI 0.0416) · `2026-10-02` **PASS** (max 0.0546, 17 columns gated, `oov_rate` SKIPPED — see 5.6).
+
+### 5.6 Engineered Drift Features (Step 6)
+
+The gate above only watched two model outputs. `src/raay/inference/drift_features.py` widens it to **17 gated columns**: `predicted_label`, `positive`, `confidence_score`, `text_length`, `oov_bucket`, `oov_rate`, `dialect_label`, and `embedding_pc1..10`.
+
+`AraBertEmbedder` loads the **same** tokenizer and encoder the model was fine-tuned with (`models/baseline/final`, `local_files_only`, mask-aware mean pooling) and embeds the day's texts. PCA is **fitted once on the reference and frozen** to `data/scoring/reference/pca_basis.joblib` — never refit per day, so day-over-day scores are comparable. `ProjectionBasis.check_compatible` refuses a basis built from a different `model_dir`/`max_length`/`pooling`.
+
+**The encoder is loaded for exactly two modes**, `init-reference` and `drift`. `make-input` and `score` must not pay ~2 GB and ~2 minutes for a model they never use, and the nightly DAG runs them every day.
+
+The gate was validated with both a null and a positive control, and the numbers are the reason to trust it:
+
+| control | result |
+| --- | --- |
+| **Null** — two independent 1000-row panels vs one 1000-row reference | max PSI **0.042 / 0.055** — the noise floor sits ~2× below the 0.1 WARN line |
+| **Positive** — half the panel replaced with francophone-Arabizi | **all 16 non-`oov_bucket` columns FAIL**; dialect PSI 1.47, arabizi share 4.5%→51.5%, `text_length` 1.84 |
+
+It fires when it should and stays quiet when it should. 51 hermetic tests in `tests/test_drift_features.py` (fake tokenizer/encoder/scorer in `tests/conftest.py`).
+
+### 5.7 Prediction Drift & Triage (Step 6)
+
+`src/raay/inference/prediction_drift.py`, run as `--mode predict-drift` → `reports/prediction_drift/{date}.json`. This watches the **outputs** rather than the inputs: the predicted class mix PSI'd against **two** references (the training label prior, read from `data/processed/train.csv`; and the reference panel's own predictions), mean `predicted_score` vs the frozen reference mean, plus a rolling z-score.
+
+`classify_triage` is a 2×2 that names *which half moved*, which is the difference between "something is wrong" and "go look at this":
+
+| input | output | triage |
+| --- | --- | --- |
+| PASS | PASS | `stable` |
+| FAIL | PASS | `world_changed` |
+| PASS | FAIL | `model_degraded` |
+| FAIL | FAIL | `ambiguous` |
+| missing | any | `indeterminate` |
+
+A missing input-drift report returns `indeterminate` rather than assuming the inputs held. `escalate` — the coupled signal (confidence falling **AND** class PSI rising) — is kept as its own field and never folded into `overall`, so it cannot invent a threshold below the agreed one.
+
+> **The brief's 45/35/20 class prior is wrong for this dataset, and the gate reads the real one instead.** Measured proportions are **57.6/37.3/5.1**, identical across all three splits (Neutral overstated 4×). A clean panel against 45/35/20 scores **PSI 0.41 (FAIL)**; against the real prior, **0.021 (PASS)** — the gate would have failed every night on a healthy model. Both numbers are pinned by tests so the wrong prior cannot be quietly reintroduced.
+
+> **The ~0.02 baseline is the model's Neutral weakness, not drift.** It predicts Neutral 2.9% against a 5.1% prior (recall 0.139), so PSI against the true prior is never 0. Do not tighten thresholds below it. Separately, the rolling z-score needs **≥ 7 days** of history, not 3: at a 3-day window four panels that are provably just sampling noise produce a monotone decline and fire at z = −2.85. 31 hermetic tests in `tests/test_prediction_drift.py`.
+
+### 5.8 Airflow Orchestration
 
 Airflow is **host-isolated — not a project dependency**:
 
@@ -489,11 +534,19 @@ nohup airflow webserver --port 8080 >> airflow_runtime/logs/webserver.out 2>&1 &
 airflow dags trigger raay_nightly_batch_scoring
 ```
 
-The DAG `airflow/dags/raay_nightly_batch_scoring.py` runs daily at **03:00 UTC**: `materialize_daily_input → score_daily_batch → run_drift_check`, each a `BashOperator` shelling out to `uv run python -m raay.inference.batch_score`.
+The DAG `airflow/dags/raay_nightly_batch_scoring.py` runs daily at **03:00 UTC** as six chained tasks, each a `BashOperator` shelling out to `uv run python -m raay.inference.*`:
+
+```
+materialize_daily_input → score_daily_batch → run_drift_check
+                        → run_prediction_drift_check → evaluate_retrain_trigger
+                        → check_pending_feedback → merge_validated_feedback
+```
+
+The chain is ordered deliberately: `predict_drift` must run **after** `drift` or every night classifies as `indeterminate`, and the feedback merge must not run while the drift chain has failed — it would half-apply a batch on top of an incomplete night. `check_pending_feedback` is a `ShortCircuitOperator` reading the merged *file*, not a counter, so a retry after a crash cannot re-merge. 11 structural tests in `tests/test_nightly_dag.py`.
 
 > `LocalExecutor` is hard-blocked on SQLite — the runtime uses `SequentialExecutor`. Only change the executor while the scheduler is **stopped**, and trust the scheduler's own `/proc/<pid>/environ` over `airflow config get-value`.
 
-### 5.7 Shadow-then-Canary Rollout
+### 5.9 Shadow-then-Canary Rollout
 
 A standalone compose project (`docker-compose.canary.yml`, `name: canary`) that
 owns **:8000 through its own nginx front** while a rollout runs, then hands it
@@ -556,19 +609,22 @@ of the request `texts`. 46 hermetic tests in `tests/test_canary_nginx.py`
 (renderer per stage, fake MLflow client, fake Prometheus — no nginx binary
 needed).
 
-### 5.8 Scheduled Retraining Hooks (Step 6)
+### 5.10 Scheduled Retraining Hooks (Step 6)
 
 `.github/workflows/retrain.yml` watches for **newly versioned raw data** and
 turns it into a reviewable model-update PR. Weekly (Monday 04:12 UTC), on
-demand, or on a `repository_dispatch` (`event_type: retrain` — the seam the
-nightly PSI drift alert will eventually push through). It:
+demand, or on a `repository_dispatch` (`event_type: retrain` — the seam that
+`raay.inference.retrain_trigger` pushes through nightly; see 5.11). It:
 
-1. **Checks out `dev`** (the workflow file lives on `main` because GitHub only
-   schedules default-branch files, but data changes land on `dev`);
+1. **Checks out `dev`**, because that is where data changes land. Note the
+   scheduling caveat below: GitHub only honours `schedule:` and
+   `repository_dispatch` for workflow files present on the **default branch**;
 2. **Pulls the raw CSV and re-runs** `dvc pull data/raw/Final_Data.csv.dvc`
-   → `dvc repro` → verifies `dvc status preprocess split` is clean (scoped to
-   the pipeline stages; the job never pulls the DVC-tracked serving artifacts,
-   so a repo-wide status would read them as "not in cache");
+   → `dvc repro preprocess split` → verifies `dvc status preprocess split` is
+   clean. Scoped to those two stages on purpose: a bare `dvc repro` runs every
+   stage in `dvc.yaml` — including `feedback`, whose dep this runner never pulls
+   — and would rewrite the git-tracked `reports/feedback_metrics.json`, tripping
+   `git diff --exit-code dvc.lock` under a metrics table that explains nothing;
 3. **Early-exits on no-op**: if `dvc repro` left `dvc.lock` unchanged (the lock
    embeds the raw input md5), nothing moved — the run stops, costing nothing;
 4. **Gates the split** with the *same* `scripts/ci_metrics_gate.py` CI uses, at
@@ -584,13 +640,45 @@ nightly PSI drift alert will eventually push through). It:
    uploading the report either way (→ `reports/data_refresh_<date>.{json,md}`,
    git-ignored).
 
+A dispatch also runs an independent `notify` job (`if: repository_dispatch`,
+`needs: refresh`, `issues: write`) that opens an idempotent
+`Retrain candidate: <reason> on <date>` issue. It deliberately cannot retrain —
+a structural test pins that it invokes no `uv` / `dvc` / `python -m` — because
+a `psi_breach` means the raw data did not change, so the refresh job is correctly
+a no-op and forcing past its early exit would reach `git commit` with nothing
+staged.
+
 The refresh threshold defaults to `0.005` and is dispatch-overridable via
 `client_payload.threshold`; a dispatch `client_payload.reason` is echoed in the
-run summary. ~19 structural tests in `tests/test_retrain_workflow.py`; the
+run summary. 24 structural tests in `tests/test_retrain_workflow.py`; the
 `--ignore` change to `ci_metrics_gate.py` leaves the default path byte-identical,
 so CI's own gate is untouched (35 tests).
 
-### 5.9 Customer-Service Feedback Loop (Step 6)
+> **This workflow is currently inert, and so is every other cron in the repo.** `main` contains **no `.github/` directory at all** — it sits on a divergent lineage whose merge-base with `dev` is the very first commit, carrying none of `dev`'s 60+ commits. GitHub only runs `schedule:` and `repository_dispatch` for default-branch workflow files, so the weekly retrain, the weekly promotion re-gate, and all of CD have never executed. `push`/`pull_request` are unaffected, which is why CI looks healthy and hides it. Getting the workflow files onto the default branch is the single highest-impact fix outstanding.
+
+### 5.11 Retrain Trigger (Step 6)
+
+`src/raay/inference/retrain_trigger.py` is the nightly DAG's **fifth** task. It reads both drift reports and turns them into a decision, with precedence **`manual` > `psi_breach` > `scheduled` > `none`**, writing `reports/retrain_trigger/{date}.json` and logging `trigger_reason` as a queryable tag in `raay_batch`.
+
+```bash
+uv run python -m raay.inference.retrain_trigger --date 2026-10-03
+```
+
+Three deliberate **non**-firers, each a false alarm avoided:
+
+1. **WARN does not fire.** Action is at 0.2–0.25, and a model sitting at its ~0.02 Neutral offset must never reach a trigger.
+2. **`SKIPPED` / `ERROR` columns do not fire.** `oov_rate` is structurally 0.0 → `SKIPPED`; a null score is not a breach.
+3. **Unconfirmed calendar events do not fire.** Ramadan and Eid are moon-sighting-set, so `confirmed: false` in `configs/seasonal_events.yaml` is the arming switch and a stale or guessed date cannot cause a retrain. Black Friday is resolved as *the Friday after the 4th Thursday*, deliberately not "last Friday of November" (2027-11-26 vs 2027-11-27 — a test pins both).
+
+`dispatch_retrain` POSTs to the GitHub `dispatches` API with stdlib `urllib.request` (`requests` is only a transitive dep, and `deploy_staging` / `canary_promote` are stdlib-only for the same reason). The token is read from `airflow_runtime/secrets/github_dispatch_token` or `RAAY_GITHUB_DISPATCH_TOKEN`, **never argv**, and goes in an `Authorization: Bearer` header.
+
+- **The required scope was measured, not assumed.** GitHub's endpoint page documents only the *classic* `repo` scope. A read-only fine-grained PAT returns **403** `Resource not accessible by personal access token`; a fine-grained token with **Contents: read and write** on the target repo returns **204**.
+- **A failed dispatch exits 1; a missing token exits 0.** The report is written to disk first either way, and `dispatch.ok` / `status` / `error` land in it. A breach the operator asked to be notified about and wasn't is an infrastructure fault, so the task goes red and Airflow retries.
+- **A 204 does not mean a workflow ran.** On this repo none does — see the caveat in 5.10.
+
+`scripts/promote_model.py` stamps the reason onto the promoted version, **only at the Production flip**. A rejected candidate or a `--dry-run` is never tagged, and a clean night (`reason: none`) emits no tags at all, because tagging a version `trigger_reason=none` would assert a drift-motivated promotion that never happened. 30 hermetic tests in `tests/test_retrain_trigger.py`.
+
+### 5.12 Customer-Service Feedback Loop (Step 6)
 
 The last mile: production disagrees with the model, and the disagreement is a
 **labelled example nobody had**. A CS agent corrects a sentiment label in their
@@ -689,6 +777,12 @@ then explain nothing. `dvc.lock` still covers its hashes, so a non-reproducible
 merge surfaces as a lock diff. 67 tests in `tests/test_feedback.py`, 32 in
 `tests/test_feedback_service.py`.
 
+> The full drift-and-feedback story — every measured number, the null/positive
+> controls, and the eight bugs the tests caught — is written up in
+> [`docs/pr7.md`](docs/pr7.md), with the verbatim execution logs in
+> [`commands_run_p7.txt`](docs/commands_run_p7.txt) and
+> [`commands_run_p8.txt`](docs/commands_run_p8.txt).
+
 ---
 
 ## Phase 6: CI/CD, Deployment &amp; Automation
@@ -701,7 +795,7 @@ The pipeline is four workflow files with one shared quality gate and one mover o
 | **CD** | `.github/workflows/cd.yml` | every push to `main` | builds the serving image, versioned `int8-<md5>`, smoke-tests it, pushes to GHCR |
 | **Staging deploy** | `cd.yml` → `deploy-staging` job | after a published image | deploys to the staging box, gates it, auto-rolls back to the last smoke-tested sha |
 | **Promotion gate** | `.github/workflows/promote.yml` | dispatch / weekly | 14-gate evaluation; the only code that moves the `Production` alias |
-| **Retrain check** | `.github/workflows/retrain.yml` | weekly / dispatch | re-runs `dvc repro` on new raw data; opens a data-refresh PR (see 5.8) |
+| **Retrain check** | `.github/workflows/retrain.yml` | weekly / dispatch | re-runs `dvc repro` on new raw data; opens a data-refresh PR (see 5.10) |
 
 ### 6.1 CI — gate every change to `dev`
 
@@ -709,7 +803,7 @@ The pipeline is four workflow files with one shared quality gate and one mover o
 
 ### 6.2 CD — publish an image only from `main`
 
-`main` is a fast-forward of `dev`, so every commit published here already passed CI's gate on its PR; CD does not re-run it. The image bakes the four DVC-served artifacts (the int8 graph + the baseline tokenizer, never the MLflow registry — see `docs/pr6.md` for why). `model_version` is derived from the graph's md5 (`int8-687d587004c6`) and ships twice: as an OCI label for `docker inspect`, and as a build-arg that the service reports on `/health` and `/predict`. A smoke test greps both routes for the version before anything is pushed.
+`main` **is not** a fast-forward of `dev` — it sits on a divergent lineage sharing only the very first commit, so CD has never actually run and the assumption that CI already gated these commits does not hold today. The image bakes the four DVC-served artifacts (the int8 graph + the baseline tokenizer, never the MLflow registry — see `docs/pr6.md` for why). `model_version` is derived from the graph's md5 (`int8-687d587004c6`) and ships twice: as an OCI label for `docker inspect`, and as a build-arg that the service reports on `/health` and `/predict`. A smoke test greps both routes for the version before anything is pushed.
 
 ### 6.3 Staging — deploy, verify, or roll back
 
@@ -729,28 +823,34 @@ uv run python scripts/promote_model.py --candidate-version 7 --skip-registry
 
 ## Testing
 
-432 hermetic unit tests — no GPU, no network, no running servers:
+**704 hermetic unit tests** (703 passing, 1 skipped) — no GPU, no network, no running servers:
 
-| Suite                            | Tests | Covers                                                                    |
-| -------------------------------- | ----: | ------------------------------------------------------------------------- |
-| `tests/test_promote_model.py`  |    66 | Phase 6 promotion gate (14 gates, latency A/B, dry-run safety)            |
-| `tests/test_cd_workflow.py`    |    48 | CD workflow contract (build → inspect → smoke test → push)                |
-| `tests/test_canary_nginx.py`   |    46 | Conf renderer per stage, compose, rollout semantics, gate math            |
-| `tests/test_canary_agent.py`   |    22 | Shadow pairing (request-id + content), gaps, Prometheus text              |
-| `tests/test_serving.py`        |    36 | BentoML service, health middleware, 422 validation, telemetry events      |
-| `tests/test_deploy_staging.py` |    36 | Staging deploy tool (flip/schema/unhealthy rollback paths)                |
-| `tests/test_promote_workflow.py`|   29 | Promotion workflow contract (gate → human → re-gate)                     |
-| `tests/test_ci_metrics_gate.py`|    35 | Split-metrics diff gate (incl. `--ignore` refresh mode)                   |
-| `tests/test_retrain_workflow.py`|   19 | Step 6 retrain workflow structural contract                               |
-| `tests/test_batch_consumer.py` |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer              |
-| `tests/test_ci_workflow.py`    |    20 | CI workflow structural contract                                           |
-| `tests/test_batch_score.py`    |    14 | Input sampling, scoring, PSI drift verdicts                               |
-| `tests/test_preprocess.py`     |     9 | Normalization, dedup, near-empty flagging                                 |
-| `tests/test_export_onnx.py`    |     9 | Export parity helpers                                                     |
-| `tests/test_dialect.py`        |     7 | Dialect heuristics + confidence                                           |
-| `tests/test_distill.py`        |     7 | Distillation loss / config wiring                                         |
-| `tests/test_split.py`          |     6 | Split sizes + label/dialect proportions                                   |
-| `tests/test_quantize_onnx.py`  |     3 | Quantization + parity report                                              |
+| Suite                             | Tests | Covers                                                                    |
+| --------------------------------- | ----: | ------------------------------------------------------------------------- |
+| `tests/test_promote_model.py`     |    74 | Promotion gate (14 gates, latency A/B, dry-run safety)                     |
+| `tests/test_feedback.py`          |    67 | Feedback QA ladder, corroboration, leakage guard, train-only merge         |
+| `tests/test_drift_features.py`    |    51 | Engineered drift columns, frozen PCA basis, OOV comparability               |
+| `tests/test_cd_workflow.py`       |    48 | CD workflow contract (build → inspect → smoke test → push)                  |
+| `tests/test_canary_nginx.py`      |    46 | Conf renderer per stage, compose, rollout semantics, gate math              |
+| `tests/test_batch_score.py`       |    37 | Input sampling, scoring, PSI drift verdicts, prediction drift               |
+| `tests/test_retrain_trigger.py`   |    37 | Trigger precedence, seasonal calendar, `repository_dispatch` POST            |
+| `tests/test_serving.py`           |    36 | BentoML service, health middleware, 422 validation, telemetry events        |
+| `tests/test_deploy_staging.py`    |    36 | Staging deploy tool (flip/schema/unhealthy rollback paths)                  |
+| `tests/test_ci_metrics_gate.py`   |    35 | Split-metrics diff gate (incl. `--ignore` refresh mode)                     |
+| `tests/test_feedback_service.py`  |    32 | Starlette feedback sidecar (auth, idempotency, 422s)                        |
+| `tests/test_prediction_drift.py`  |    31 | Class-mix gates, triage matrix, rolling z-score                             |
+| `tests/test_promote_workflow.py`  |    29 | Promotion workflow contract (gate → human → re-gate)                        |
+| `tests/test_ci_workflow.py`       |    27 | CI workflow contract (fork guard, repro scoping, token pinning)              |
+| `tests/test_retrain_workflow.py`  |    24 | Retrain workflow contract + the `notify` job                                |
+| `tests/test_canary_agent.py`      |    22 | Shadow pairing (request-id + content), gaps, Prometheus text                |
+| `tests/test_batch_consumer.py`    |    20 | Micro-batch drain, fake Redis / in-memory queue, fake scorer                |
+| `tests/test_nightly_dag.py`       |    11 | Nightly DAG task chain and ordering                                         |
+| `tests/test_preprocess.py`        |     9 | Normalization, dedup, near-empty flagging                                   |
+| `tests/test_export_onnx.py`       |     9 | Export parity helpers                                                       |
+| `tests/test_dialect.py`           |     7 | Dialect heuristics + confidence                                             |
+| `tests/test_distill.py`           |     7 | Distillation loss / config wiring                                           |
+| `tests/test_split.py`             |     6 | Split sizes + label/dialect proportions                                     |
+| `tests/test_quantize_onnx.py`     |     3 | Quantization + parity report                                                |
 
 ```bash
 uv run pytest
@@ -763,12 +863,17 @@ uv run pytest
 Stated plainly, because the numbers above are only useful with their caveats:
 
 - **Micro-batching does not beat serial scoring on this box.** At batch 32 the INT8 graph costs ~58–84 ms *per item* vs ~12 ms single — a `pure_cpu` speedup of **0.25×** (0.50× once a 20 ms per-call overhead is modeled). Batching still wins on *call amortization* (128 reviews → 4 `session.run` calls) and on batch-throughput-bound backends (GPU / TensorRT) or high per-call HTTP overhead. On a 2-core CPU, treat `pure_cpu < 1` as expected, not a bug.
-- **The canary latency gate compares like for like on shared cores.** Both workers run on the same box, so their p95s are a same-hardware A/B (fair) *and* both contend for the same cores (the candidate's sawtooth is partly CPU contention). The stage gates therefore require the *ratio* ≤ 1.10, never an absolute budget. The behavioral gate is still the nightly PSI drift job.
+- **The canary latency gate compares like for like on shared cores.** Both workers run on the same box, so their p95s are a same-hardware A/B (fair) *and* both contend for the same cores (the candidate's sawtooth is partly CPU contention). The stage gates therefore require the *ratio* ≤ 1.10, never an absolute budget. The behavioral gate is the nightly drift chain (input drift → prediction drift → trigger).
+- **Every cron in this repo is inert today.** `main` contains no `.github/` directory at all — it is on a divergent lineage from `dev`, not a fast-forward of it. GitHub only honours `schedule:` and `repository_dispatch` for workflow files on the **default branch**, so the weekly retrain, the weekly promotion re-gate, and all of CD (`push` → `main`) have never executed. `push`/`pull_request` are unaffected, which is why CI looks healthy and hides it. The `repository_dispatch` POST is implemented and returns 204, but that only means GitHub accepted the event — it does not mean a workflow ran, and here none does. Getting the workflow files onto the default branch is the highest-impact fix outstanding.
+- **Both drift panels are seeded draws from `data/processed/test.csv`.** A PASS means "matches the training distribution", and the ~0.05 null floor is therefore optimistic. What is validated is the **mechanism**, not production-traffic behaviour. Two of the four triage cells (`world_changed`, `model_degraded`) are not constructible from one pool at all and are covered only by the parametrized matrix test.
+- **`oov_rate` has no detection power on this corpus.** Every reference review — and the injected new-slang panel — has OOV rate exactly 0.0, because AraBERT v2's 64k WordPiece vocab covers this corpus including franco-Arabizi, so nothing reaches `[UNK]`. It reports decision `SKIPPED` with the reason rather than passing silently; `oov_bucket` is the gated form.
+- **The seasonal trigger cannot be validated here.** No row in the corpus carries a timestamp, so whether firing before Ramadan helped is unknowable. Ramadan/Eid ship `confirmed: false` precisely so a guessed date cannot cause a retrain.
 - **INT8 "gaining" accuracy is noise.** 85.03 % vs 84.92 % is within quantization noise on 7 209 samples; the honest claim is "no meaningful quality loss at 4× compression".
-- **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one.
+- **Neutral remains the weak class** (F1 0.178) — a class-imbalance problem, not a modeling one. This is also why the prediction-drift gate's ~0.02 baseline against the true prior is expected rather than drift, so its thresholds must not be tightened below it.
 - **No local GPU.** Training and distillation run on Kaggle; local work is CPU-only inference.
-- **The feedback loop is unexercised by real traffic.** No CS tool is deployed and no agent roster exists, so every number in `reports/feedback_metrics.json` is a rehearsal. Two-agent corroboration needs two real identities: until then `--mode review` legitimately returns 100 % `single_agent` and nothing is trainable. `train_feedback.csv` ships header-only.
-- **`docs/labeling_guidelines.md` was wrong about the label encoding until v1.1.** It read Positive=2/Neutral=1/Negative=0; every graph uses the inverse. `promote_model.py`'s `label order vs Production` gate exists because of exactly this failure mode. The table is fixed and marked, and the order is now read from `constants.py` rather than retyped.
+- **The feedback loop is unexercised by real traffic.** No CS tool is deployed and no agent roster exists, so every number in `reports/feedback_metrics.json` is a rehearsal. Two-agent corroboration needs two real identities: until then `--mode review` legitimately returns 100 % `single_agent` and nothing is trainable. `train_feedback.csv` ships header-only, so no claim is made about its effect on F1. The leakage guard is tested against a synthetic `test.csv`, and rapidfuzz at 0.9 will not catch a semantically identical but lexically rewritten review.
+- **`production_error_rate` is uninterpretable if the CS tool posts only disputes.** Confirmations are its denominator, so a dispute-only tool would report a meaningless number — the report says so in its own `note`. An unobserved class gets `rate: null`, never `0.0`.
+- **`docs/labeling_guidelines.md` was wrong about the label encoding until v1.1.** It read Positive=2/Neutral=1/Negative=0; every graph uses the inverse. `promote_model.py`'s `label order vs Production` gate exists because of exactly this failure mode. The table is fixed and marked, and the order is now read from `constants.py` rather than retyped. Its §5 balance target (45/35/20) was also wrong for this dataset and was corrected to the measured 57.6/37.3/5.1.
 
 ---
 
@@ -789,6 +894,9 @@ Stated plainly, because the numbers above are only useful with their caveats:
 | `RAAY_FEEDBACK_TOKEN`     | Bearer token for `POST /feedback` (write access to the training corpus) | unset → the service **refuses to start**                |
 | `RAAY_FEEDBACK_TOKEN_FILE` | File holding that token (preferred; not visible in `ps`) | —                                                                     |
 | `RAAY_FEEDBACK_ALLOW_ANON` | Permit an unauthenticated feedback service (local dev only) | `0`                                                            |
+| `RAAY_GITHUB_DISPATCH_TOKEN` | Fine-grained PAT for `repository_dispatch` — needs **Contents: read and write** on the target repo, not a read-only token | unset → a breach is recorded, nothing is sent, exit 0 |
+| `RAAY_GITHUB_DISPATCH_TOKEN_FILE` | File holding that token (preferred; never in argv / `ps`) | `airflow_runtime/secrets/github_dispatch_token` |
+| `RAAY_GITHUB_REPOSITORY` | Target `owner/repo` for the dispatch | `ahmeddiab1234/Raay` (the git remote slug) |
 
 ---
 

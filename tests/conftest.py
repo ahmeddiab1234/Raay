@@ -8,10 +8,16 @@ integration level, and duplicating the doubles would let the two drift apart.
 Nothing here touches ``data/``, ``models/`` or a real graph (AGENTS.md rule).
 """
 
+import sys
+from pathlib import Path
 from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+pytest_plugins = ("canary_helpers", "cd_helpers", "deploy_staging_helpers")
 
 HIDDEN = 8
 

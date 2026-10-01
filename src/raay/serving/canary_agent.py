@@ -7,7 +7,8 @@ gates in ``scripts/canary_promote.py`` then query Prometheus.
 
 Model-free by design: the agent never touches the graph, tokenizer or MLflow.
 It only sums up events it is handed, so it stays small enough to be fully
-covered by hermetic unit tests.
+covered by hermetic unit tests. The event schema and pairing key live in
+``canary_events``; this module is the agent itself.
 
 Endpoints (run from the bento image as
 ``python -m uvicorn raay.serving.canary_agent:app --host 0.0.0.0 --port 9100``):
@@ -32,19 +33,6 @@ that a worker stopped receiving traffic (candidate down during shadow). This
 works even when the candidate is dead: the stable side's event alone marks the
 request as shadowed, so the candidate gap is still counted.
 
-**Pairing key**: the two events are paired by ``request_id`` when the request
-carried one (a client or an upstream gateway set ``X-Request-ID``, which nginx
-mirror legitimately clones), otherwise by the SHA-256 of the request ``texts``
--- the only identifier stable and candidate provably share. ``$request_id`` is
-useless here by design: a mirror subrequest is a separate request object, so
-its ``$request_id`` differs from the main request's, and ``proxy_set_header``
-on the main location is *not* seen by the mirror (it clones only client-sent
-headers). Both workers score the identical payload (mirror clones the body),
-so content is the honest correlation key. Two identical review batches inside
-the 30 s TTL hash to the same key; the agent pairs them FIFO, and the pair is
-still a true same-input comparison, so this can undercount pairs but never
-fabricate a disagreement.
-
 During the weighted canary phases the conf sends no shadow header, so no
 request is shadowed and nothing is counted as a gap; the agent simply
 aggregates per-worker latency/error rates, which is exactly what those stage
@@ -58,85 +46,20 @@ and treat an empty series as INCONCLUSIVE, never as a pass.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import time
 from collections import deque
 from typing import Any
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
-from pydantic import BaseModel, Field, ValidationError
+from prometheus_client import generate_latest
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse
-from starlette.routing import Route
+
+from raay.serving.canary_app import build_app
+from raay.serving.canary_events import PredictionEvent, _Pair
+from raay.serving.canary_metrics import build_metrics
 
 _DEFAULT_PAIR_TTL_S = 30.0
 _DEFAULT_MAX_PAIRS = 4096
-
-
-class PredictionEvent(BaseModel):
-    """One telemetry event emitted by a worker per ``/predict`` call.
-
-    ``worker`` plus the pairing key (``request_id`` or the request ``texts``)
-    pair the two sides. ``shadow`` is true only while the shadow conf is live
-    (nginx set ``X-Raay-Shadow: 1``), which is when the agent expects a
-    stable+candidate pair for the key.
-    """
-
-    request_id: str = ""
-    worker: str = "unknown"
-    model_version: str = ""
-    status: int = 200
-    error: str | None = None
-    latency_ms: float | None = None
-    shadow: bool = False
-    predictions: list[dict[str, Any]] = Field(default_factory=list)
-    texts: list[str] = Field(default_factory=list)
-
-    @property
-    def is_error(self) -> bool:
-        return self.status >= 400 or bool(self.error)
-
-    @property
-    def labels(self) -> list[str]:
-        return [str(p.get("label", "")) for p in self.predictions]
-
-    @property
-    def pair_key(self) -> str:
-        """Correlate the stable and candidate sides of one incoming request.
-
-        ``request_id`` wins when present (a client or upstream gateway supplied
-        it, so both workers saw the identical value). Otherwise the SHA-256 of
-        the request ``texts`` -- the body is cloned by the nginx mirror, so
-        this is the value stable and candidate provably share.
-        """
-        if self.request_id:
-            return self.request_id
-        if self.texts:
-            digest = hashlib.sha256(
-                json.dumps(self.texts, sort_keys=True, ensure_ascii=False).encode()
-            ).hexdigest()
-            return digest
-        return ""
-
-
-class _Pair:
-    """One pairing key awaiting stable + candidate events."""
-
-    __slots__ = ("created", "events", "key", "shadowed")
-
-    def __init__(self, key: str, now: float) -> None:
-        self.key = key
-        self.events: dict[str, PredictionEvent] = {}
-        self.shadowed = False
-        self.created = now
-
-    def add(self, event: PredictionEvent) -> None:
-        self.events[event.worker] = event
-        if event.shadow:
-            self.shadowed = True
 
 
 class CanaryAgent:
@@ -158,39 +81,13 @@ class CanaryAgent:
         self._clock = clock or time.monotonic
         self._pairs: dict[str, _Pair] = {}
         self._order: deque[str] = deque()
-        registry = CollectorRegistry()
-        self._registry = registry
-        self._ingest = Counter(
-            "raay_ingest_total",
-            "Prediction events received, per worker.",
-            ("worker",),
-            registry=registry,
-        )
-        self._errors = Counter(
-            "raay_errors_total",
-            "Prediction events that errored, per worker.",
-            ("worker",),
-            registry=registry,
-        )
-        self._latency = Histogram(
-            "raay_latency_seconds",
-            "Worker-side /predict latency.",
-            ("worker",),
-            registry=registry,
-        )
-        self._agreement = Counter(
-            "raay_agreement_total",
-            "Paired shadow requests by agreement status.",
-            ("status",),
-            registry=registry,
-        )
-        self._pair_gap = Counter(
-            "raay_pair_gap_total",
-            "Shadowed request ids that expired with one side missing, by the "
-            "worker that *did not* arrive.",
-            ("worker",),
-            registry=registry,
-        )
+        metrics = build_metrics()
+        self._registry = metrics.registry
+        self._ingest = metrics.ingest
+        self._errors = metrics.errors
+        self._latency = metrics.latency
+        self._agreement = metrics.agreement
+        self._pair_gap = metrics.pair_gap
         self.asgi = self._build_app()
 
     # ------------------------------------------------------------- ingestion
@@ -276,33 +173,7 @@ class CanaryAgent:
     # ------------------------------------------------------------------ app
 
     def _build_app(self) -> Starlette:
-        async def _ingest_route(request: Request) -> JSONResponse:
-            try:
-                raw = await request.json()
-            except json.JSONDecodeError:
-                return JSONResponse({"error": "invalid json body"}, status_code=400)
-            except Exception:  # noqa: BLE001 # pragma: no cover - defensive
-                return JSONResponse({"error": "unreadable body"}, status_code=400)
-            try:
-                event = PredictionEvent.model_validate(raw)
-            except ValidationError:
-                return JSONResponse({"error": "invalid event"}, status_code=422)
-            self.ingest(event)
-            return JSONResponse({"ok": True})
-
-        async def _metrics_route(_request: Request) -> PlainTextResponse:
-            return PlainTextResponse(self.render_metrics())
-
-        async def _health_route(_request: Request) -> JSONResponse:
-            return JSONResponse({"status": "healthy"})
-
-        return Starlette(
-            routes=[
-                Route("/ingest", _ingest_route, methods=["POST"]),
-                Route("/metrics", _metrics_route, methods=["GET"]),
-                Route("/health", _health_route, methods=["GET"]),
-            ]
-        )
+        return build_app(self)
 
 
 # Module-level pair used when the agent runs as its own process:

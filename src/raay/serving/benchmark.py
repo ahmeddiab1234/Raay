@@ -11,6 +11,9 @@ The timings wrap the exact code path ``serve.predict_probs`` uses
 numbers are representative of one online call at that batch size. Batch sizes
 > 1 show throughput headroom if the service ever adopts request batching.
 
+The timing loop lives in ``benchmark_measure``; this module is the run: load the
+session, sweep the batch sizes, write the report, log to MLflow.
+
 Run from the repo root:
 
     uv run python -m raay.serving.benchmark
@@ -23,8 +26,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
-import time
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ from transformers import AutoConfig, AutoTokenizer
 
 from raay.config.env import load_environment, mlflow_tracking_uri
 from raay.enums.constants import DefaultPaths, Experiments, Models
-from raay.serving.serve import predict_probs
+from raay.serving.benchmark_measure import benchmark_batch_size
 
 
 def load_session(tokenizer_dir: str, onnx_path: str):
@@ -47,70 +48,6 @@ def load_session(tokenizer_dir: str, onnx_path: str):
     raw = getattr(config, "id2label", None) or {}
     id2label = {int(k): v for k, v in raw.items()}
     return session, tokenizer, id2label
-
-
-def benchmark_batch_size(
-    session: Any,
-    tokenizer: Any,
-    texts: list[str],
-    y_true: np.ndarray,
-    label_to_id: dict[str, int],
-    model_name: str,
-    max_length: int,
-    batch_size: int,
-    runs: int,
-) -> dict[str, Any]:
-    """Time full passes over ``texts`` at one batch size.
-
-    Each chunk is one tokenize+ORT call (one online call at that size). Warm
-    up one chunk first, then record every chunk across ``runs`` passes.
-    """
-    n = len(texts)
-    first = texts[:batch_size]
-    predict_probs(session, tokenizer, first, model_name, max_length)
-
-    chunk_ms: list[float] = []
-    argmax_seen: list[int] = []
-    for pass_idx in range(1, runs + 1):
-        for i in range(0, n, batch_size):
-            chunk = texts[i : i + batch_size]
-            t0 = time.perf_counter()
-            probs = predict_probs(session, tokenizer, chunk, model_name, max_length)
-            chunk_ms.append((time.perf_counter() - t0) * 1000.0)
-            if pass_idx == 1:
-                argmax_seen.extend(np.argmax(probs, axis=-1).tolist())
-
-    chunk_ms = sorted(chunk_ms)
-    total_sec = sum(chunk_ms) / 1000.0
-    total_items = n * runs
-    per_item = [ms / batch_size for ms in chunk_ms]
-
-    y_pred = np.array(argmax_seen[:n])
-    accuracy = float(np.mean(y_pred == y_true))
-
-    def pct(samples: list[float], p: float) -> float:
-        return float(np.percentile(samples, p))
-
-    return {
-        "batch_size": batch_size,
-        "n_samples": n,
-        "n_calls": len(chunk_ms),
-        "n_runs": runs,
-        "chunk_latency_ms": {
-            "mean": float(statistics.mean(chunk_ms)),
-            "p50": pct(chunk_ms, 50),
-            "p95": pct(chunk_ms, 95),
-            "p99": pct(chunk_ms, 99),
-        },
-        "latency_ms_per_req_equivalent": {
-            "mean": float(statistics.mean(per_item)),
-            "p50": pct(per_item, 50),
-            "p95": pct(per_item, 95),
-            "p99": pct(per_item, 99),
-        },
-        "throughput_req_per_s": float(total_items / total_sec),
-        "accuracy": accuracy,
-    }
 
 
 def main() -> None:
