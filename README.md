@@ -179,11 +179,43 @@ Preprocessing on the primary set (`reports/preprocess_metrics.json`): 40 046 raw
 - **Docker** (for the serving stack)
 - **Git**
 
+### Quickstart (3 commands, **no keys required**)
+
+Clone, fetch the anonymously downloadable serving assets (the INT8 graph + tokenizer + raw split), and run the API.
+
+```bash
+git clone https://github.com/ahmeddiab1234/Raay.git
+cd Raay
+uv sync --all-extras
+```
+
+```bash
+# Downloads the DVC-tracked objects we publish as public release assets
+# and verifies their md5 against the *.dvc pointers.
+uv run python scripts/fetch_assets.py
+```
+
+```bash
+# Docker (self-contained image, prod defaults)
+docker compose up -d
+curl -s http://localhost:8000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"texts": ["\u0647\u0630\u0627 \u0627\u0644\u0645\u0646\u062a\u062c \u0645\u0645\u062a\u0627\u0632 \u062c\u062f\u0627\u0651", "\u0627\u0644\u0645\u0646\u062a\u062c \u0648\u0635\u0644 \u0645\u062a\u0623\u062e\u0631 \u0648\u0627\u0644\u062c\u0648\u062f\u0629 \u0631\u062f\u064a\u0626\u0629"]}'
+```
+
+**No-Docker (dev):**
+
+```bash
+uv run bentoml serve src/raay/serving/serve.py:svc --reload  # http://localhost:3000
+```
+
+`GET /health` returns `{"status":"healthy"}`; `POST /predict` takes `{"texts":[]}` → `[]` (200), malformed payloads return 422.
+
 ### 1. Clone the Repository
 
 ```bash
-git clone git@github.com:<your-org>/raay.git
-cd raay
+git clone https://github.com/ahmeddiab1234/Raay.git
+cd Raay
 ```
 
 ### 2. Install uv (if not already installed)
@@ -203,9 +235,8 @@ uv sync --all-extras
 
 ```bash
 cp .env.example .env
-# Edit .env and set:
-#   MLFLOW_TRACKING_URI=sqlite:///mlflow.db   # local default
-#   MLFLOW_ALLOW_FILE_STORE=true              # required by MLflow >= 3 for file: URIs
+# The defaults run against a local SQLite MLflow store (mlflow.db). No secrets
+# are required for the quickstart above — see .env.example for every variable.
 ```
 
 MLflow runs against a **local SQLite store** (`mlflow.db`) by default — no server needed:
@@ -216,25 +247,28 @@ uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # http://localhost:50
 
 > To use a remote tracking server instead, set `MLFLOW_TRACKING_URI=http://<host>:5000`; the code paths are identical.
 
-### 5. Set Up DVC
+### 5. Fetch the required assets (no auth)
 
-`dvc init` and the `storage` remote are already committed in this repo — only the data pull is needed:
-
-```bash
-uv run dvc pull
-```
-
-<details>
-<summary>First-time setup only (fresh clone without <code>.dvc/</code>)</summary>
+The DVC remote (`dagshub`) is not anonymously readable. To run the API/data pipeline
+without a Dagshub account, download the published release assets and verify them
+against the committed `*.dvc` pointers:
 
 ```bash
-uv run dvc init
-mkdir -p ~/dvc-storage/raay
-uv run dvc remote add -d storage ~/dvc-storage/raay
-uv run dvc pull
+uv run python scripts/fetch_assets.py
+# Verify against pointers without downloading:
+uv run python scripts/fetch_assets.py --verify-only
 ```
 
-</details>
+The script fetches `models/onnx/model_int8.onnx`, the baseline tokenizer
+(`models/baseline/final/{config,tokenizer,tokenizer_config}.json`),
+`data/raw/Final_Data.csv`, and `data/feedback/reviewed/overrides.csv` from the
+public GitHub release `raay-assets-v1`. These are byte-identical to the objects
+referenced by their `.dvc` files.
+
+**Optional:** if you need the full DVC history (e.g. the 212 MB EDA corpus
+`data/raw/arabic_sentiment_reviews.csv` or to sync other tracked artifacts),
+configure credentials in `.dvc/config.local` and run `uv run dvc pull`. That path
+is only needed for parts of the project beyond the no-key quickstart.
 
 ### 6. Install Pre-commit Hooks
 
@@ -258,11 +292,15 @@ uv run pytest                # Tests (704)
 
 **Phase 2: Data Collection & Preprocessing** ([PR #2](https://github.com/ahmeddiab1234/Raay/pull/2))
 
-A DVC pipeline (`dvc.yaml`) turns the raw dataset into reproducible, dialect-tagged splits. Stages read `params.yaml` and auto-log to the `raay_preprocessing` MLflow experiment.
+A DVC pipeline (`dvc.yaml`) turns the raw dataset into reproducible, dialect-tagged splits. Stages read `params.yaml` and auto-log to the `raay_preprocessing` MLflow experiment. After fetching the required assets (or pulling with DVC), reproduce the tracked pipeline:
 
 ```bash
-uv run dvc repro             # preprocess → split
+uv run dvc repro preprocess split
 ```
+
+> `dvc repro` with no targets also runs `feedback` (which expects reviewed overrides);
+> CI and the retrain check scope to `preprocess split` for that reason. `dvc status`
+> should be clean if the pointers and fetched files are in sync.
 
 | Stage          | Command                            | Outputs                                                                         |
 | -------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
@@ -807,7 +845,7 @@ The pipeline is four workflow files with one shared quality gate and one mover o
 
 ### 6.2 CD — publish an image only from `main`
 
-`main` **is not** a fast-forward of `dev` — it sits on a divergent lineage sharing only the very first commit, so CD has never actually run and the assumption that CI already gated these commits does not hold today. The image bakes the four DVC-served artifacts (the int8 graph + the baseline tokenizer, never the MLflow registry — see `docs/pr6.md` for why). `model_version` is derived from the graph's md5 (`int8-687d587004c6`) and ships twice: as an OCI label for `docker inspect`, and as a build-arg that the service reports on `/health` and `/predict`. A smoke test greps both routes for the version before anything is pushed.
+CD triggers on pushes to `main`. The image bakes the DVC-served artifacts (the int8 graph + the baseline tokenizer, never the MLflow registry — see `docs/pr6.md` for why). `model_version` is derived from the graph's md5 (`int8-687d587004c6`) and ships twice: as an OCI label for `docker inspect`, and as a build-arg that the service reports on `/health` and `/predict`. A smoke test greps both routes for the version before anything is pushed.
 
 ### 6.3 Staging — deploy, verify, or roll back
 
@@ -827,7 +865,35 @@ uv run python scripts/promote_model.py --candidate-version 7 --skip-registry
 
 ---
 
+## Running on a clean machine
+
+This section is written for an evaluator cloning the repo with **no credentials**.
+
+| Requirement | Notes |
+| --- | --- |
+| **OS** | Linux, macOS, or Windows (WSL2). Tested on Linux. |
+| **Python** | **3.12+**. Managed via [`uv`](https://docs.astral.sh/uv/). |
+| **GPU** | **Not required.** The shipped API uses CPU INT8 ONNX (`onnxruntime` CPUExecutionProvider) — single-call p50 ≈12 ms on a 2-core CPU. A GPU is only needed for training/distillation (the repo has Kaggle T4 notes). |
+| **Disk** | ~4 GB free (venv ~3 GB) for deps; the published assets add ~142 MB and `data/raw/Final_Data.csv` ~4.4 MB. |
+| **Docker** | Optional. `docker compose up -d` serves on **:8000**. Without Docker, `uv run bentoml serve src/raay/serving/serve.py:svc` serves on **:3000**. |
+| **Ports** | `8000` (prod compose), `3000` (Bento dev), `6379` (Redis), `8080` (Airflow webserver), `5000` (MLflow UI), `9090` (Prometheus, canary), `8001`/`8002`/`8081` (canary direct/nginx). |
+| **Network** | Only needed to install dependencies (`uv sync`) and to fetch the public release assets once (`scripts/fetch_assets.py`). All tests and the core API path run offline after that. |
+| **Model downloads** | None at runtime. `scripts/fetch_assets.py` pulls pre-published, md5-verified artifacts from the public GitHub release `raay-assets-v1`. The encoder weights used by engineered drift features live under `models/baseline/final/` (also fetched or present). |
+| **Seed data** | Use the fetched `data/raw/Final_Data.csv` or your own copy with columns `review_description`/`rating` (the preprocess stage renames them to `text`/`label`). The train/val/test split is label-stratified with `split.random_state` in `params.yaml`, so reruns reproduce metrics within ±0.005. |
+
+**Run order (minimal, no-key):**
+
+1. `uv sync --all-extras`
+2. `cp .env.example .env` (optional; defaults are fine)
+3. `uv run python scripts/fetch_assets.py`
+4. `uv run dvc repro preprocess split` *(or just run the API — it reads the fetched assets directly)*
+5. `docker compose up -d` and `curl -s http://localhost:8000/predict -H 'Content-Type: application/json' -d '{"texts":["منتج ممتاز"]}'`
+
+**What needs credentials (optional):** a remote DVC/MLflow store (`DAGSHUB_USER`/`DAGSHUB_TOKEN`), a GitHub fine-grained PAT with **Contents: read and write** for `repository_dispatch` (`RAAY_GITHUB_DISPATCH_TOKEN` — a read-only token is rejected; set to nothing/disable to record a breach without dispatching), an authenticated feedback sidecar (`RAAY_FEEDBACK_TOKEN`, the service refuses to start without one unless `RAAY_FEEDBACK_ALLOW_ANON=1`), and registry tokens for CD/staging. None of these are required to run tests or the serving quickstart above. See `.env.example` for **every** variable name (no values).
+
 ## Environment Variables
+
+For the full, up-to-date list of names and defaults, see [`.env.example`](.env.example). Key knobs:
 
 | Variable                    | Description                                              | Default                                                                |
 | --------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
