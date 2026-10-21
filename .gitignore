@@ -161,3 +161,4 @@ reports/eda/Final_Data_first_data_only/summary_states.json
 # local Airflow runtime (dag scheduler/webserver state; DAGs themselves live in airflow/dags/)
 airflow_runtime/
 The-MLOps-Practitioner-Mini-Projects-and-Final-Project-Handbook.pdf
+email.txt
